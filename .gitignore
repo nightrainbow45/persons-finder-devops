@@ -1,17 +1,17 @@
-# Compiled class file
+##############################################
+# Kotlin / JVM
+##############################################
 *.class
-
-# Log file
-*.log
-
-# BlueJ files
 *.ctxt
-
-# Mobile Tools for Java (J2ME)
 .mtj.tmp/
+hs_err_pid*
+replay_pid*
 
-# Package Files #
+##############################################
+# Package artifacts
+##############################################
 *.jar
+!gradle/wrapper/gradle-wrapper.jar
 *.war
 *.nar
 *.ear
@@ -19,6 +19,95 @@
 *.tar.gz
 *.rar
 
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
-hs_err_pid*
-replay_pid*
+##############################################
+# Gradle
+##############################################
+.gradle/
+build/
+out/
+
+##############################################
+# Logs
+##############################################
+*.log
+logs/
+
+##############################################
+# IDE — IntelliJ IDEA
+##############################################
+.idea/
+!.idea/.gitignore
+*.iml
+*.ipr
+*.iws
+
+# IDE — VS Code
+.vscode/
+
+# IDE — Eclipse
+.project
+.classpath
+.settings/
+*.launch
+.factorypath
+
+# IDE — NetBeans
+nbproject/
+
+##############################################
+# OS
+##############################################
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+##############################################
+# Editor temporary files
+##############################################
+*.swp
+*.swo
+*.bak
+*.tmp
+*.orig
+*~
+
+##############################################
+# Terraform
+##############################################
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+# NOTE: .terraform.lock.hcl SHOULD be committed to track provider versions
+# NOTE: terraform.tfvars may contain secrets — review each file before committing
+
+##############################################
+# Docker
+##############################################
+docker-compose.override.yml
+
+##############################################
+# jqwik (property-based testing)
+##############################################
+.jqwik-database
+
+##############################################
+# Claude Code workspace
+##############################################
+.claude/
+
+##############################################
+# Kiro project tool
+##############################################
+.kiro/settings/

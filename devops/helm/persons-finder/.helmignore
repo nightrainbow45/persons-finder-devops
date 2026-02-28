@@ -1,28 +1,52 @@
 # Patterns to ignore when building packages.
 # This supports shell glob matching, relative path matching, and
 # negation (prefixed with !). Only one pattern per line.
+
+# OS
 .DS_Store
+.DS_Store?
+._*
+Thumbs.db
+desktop.ini
+
 # Common VCS dirs
 .git/
 .gitignore
+.gitattributes
 .bzr/
 .bzrignore
 .hg/
 .hgignore
 .svn/
+
 # Common backup files
 *.swp
+*.swo
 *.bak
 *.tmp
 *.orig
 *~
+
 # Various IDEs
 .project
 .idea/
 *.tmproj
 .vscode/
+*.iml
+
 # CI/CD
 .github/
 .gitlab-ci.yml
-# Documentation
+.circleci/
+
+# Documentation (not needed inside chart package)
 README.md
+CHANGELOG.md
+NOTES.txt
+
+# Test overrides
+ci/
+
+# Claude Code / Kiro workspace
+.claude/
+.kiro/

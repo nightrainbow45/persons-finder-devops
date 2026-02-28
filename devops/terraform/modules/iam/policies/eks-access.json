@@ -1,0 +1,17 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EKSDescribe",
+      "Effect": "Allow",
+      "Action": [
+        "eks:DescribeCluster",
+        "eks:ListClusters",
+        "eks:DescribeNodegroup",
+        "eks:ListNodegroups",
+        "eks:AccessKubernetesApi"
+      ],
+      "Resource": "arn:aws:eks:${aws_region}:${aws_account_id}:cluster/${cluster_name}"
+    }
+  ]
+}

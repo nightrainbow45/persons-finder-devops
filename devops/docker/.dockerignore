@@ -6,6 +6,7 @@
 # Build outputs
 build/
 target/
+out/
 *.jar
 *.war
 *.ear
@@ -36,13 +37,33 @@ src/test/
 
 # Logs
 *.log
+logs/
 
 # OS
 .DS_Store
+.DS_Store?
+._*
 Thumbs.db
+desktop.ini
 
 # Temporary files
 *.tmp
 *.bak
 *.swp
+*.swo
 *~
+
+# CI/CD
+.github/
+
+# Claude Code / Kiro workspace
+.claude/
+.kiro/
+
+# Terraform state (sensitive)
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+
+# jqwik
+.jqwik-database

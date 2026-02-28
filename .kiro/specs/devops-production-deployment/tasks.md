@@ -29,7 +29,7 @@ This implementation plan covers the complete DevOps production deployment for th
   - Create placeholder README.md files in each directory explaining its purpose
   - _Requirements: 8.1, 8.2, 8.5, 8.6, 8.7_
 
-- [~] 1.1 Write unit tests for DevOps folder structure
+- [x] 1.1 Write unit tests for DevOps folder structure
   - Test all required directories exist
   - Test README.md files exist in key directories
   - Verify folder structure follows best practices
@@ -45,13 +45,13 @@ This implementation plan covers the complete DevOps production deployment for th
   - Add HEALTHCHECK instruction for container health monitoring
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7_
 
-- [~] 2.1 Write property test for container image determinism
+- [x] 2.1 Write property test for container image determinism
   - **Property 3: Container Image Determinism**
   - **Validates: Requirements 1.1, 1.2**
   - Build same source code multiple times and verify content hash consistency
   - _Requirements: 1.1, 1.2_
 
-- [~] 2.2 Write unit tests for Dockerfile best practices
+- [x] 2.2 Write unit tests for Dockerfile best practices
   - Test multi-stage build structure exists
   - Test non-root user configuration
   - Test base image version pinning
@@ -69,7 +69,7 @@ This implementation plan covers the complete DevOps production deployment for th
   - Create devops/helm/persons-finder/README.md with Chart documentation
   - _Requirements: 8.1, 8.2, 8.3, 8.4, 8.7_
 
-- [~] 3.1 Write unit tests for Helm Chart structure
+- [x] 3.1 Write unit tests for Helm Chart structure
   - Test Chart.yaml exists and has required fields
   - Test values files exist for different environments
   - Test templates directory structure
@@ -84,7 +84,7 @@ This implementation plan covers the complete DevOps production deployment for th
   - Support both inline secrets and external secret references
   - _Requirements: 2.1, 2.2, 2.5_
 
-- [~] 4.1 Write unit tests for Secret template
+- [x] 4.1 Write unit tests for Secret template
   - Test Secret template renders correctly
   - Test OPENAI_API_KEY key exists in rendered output
   - Verify Secret type is Opaque
@@ -104,7 +104,7 @@ This implementation plan covers the complete DevOps production deployment for th
   - Use Helm template helpers for labels and selectors
   - _Requirements: 2.2, 2.3, 3.1, 3.2, 3.3, 3.4, 3.5, 8.2, 9.4, 9.5_
 
-- [~] 5.1 Write unit tests for Deployment template
+- [x] 5.1 Write unit tests for Deployment template
   - Test template renders with default values
   - Test replica count parameterization
   - Test resource requests and limits parameterization
@@ -122,7 +122,7 @@ This implementation plan covers the complete DevOps production deployment for th
   - Add service annotations support from values.yaml
   - _Requirements: 3.6, 8.2_
 
-- [~] 6.1 Write unit tests for Service template
+- [x] 6.1 Write unit tests for Service template
   - Test Service template renders correctly
   - Test service type parameterization
   - Test port mapping configuration
@@ -138,7 +138,7 @@ This implementation plan covers the complete DevOps production deployment for th
   - Parameterize TLS configuration from values.yaml
   - _Requirements: 3.7, 8.2_
 
-- [~] 7.1 Write unit tests for Ingress template
+- [x] 7.1 Write unit tests for Ingress template
   - Test Ingress renders when enabled
   - Test Ingress is not rendered when disabled
   - Test host and path parameterization
@@ -153,7 +153,7 @@ This implementation plan covers the complete DevOps production deployment for th
   - Configure stabilization windows from values.yaml
   - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 8.2_
 
-- [~] 8.1 Write unit tests for HPA template
+- [x] 8.1 Write unit tests for HPA template
   - Test HPA renders when autoscaling is enabled
   - Test HPA is not rendered when disabled
   - Test minReplicas and maxReplicas parameterization
@@ -161,14 +161,14 @@ This implementation plan covers the complete DevOps production deployment for th
   - Test stabilization windows
   - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 8.2_
 
-- [~] 9. Checkpoint - Verify Helm Chart
+- [x] 9. Checkpoint - Verify Helm Chart
   - Run helm lint on the Chart
   - Run helm template to verify all templates render correctly
   - Test with different values files (dev, prod)
   - Validate rendered YAML with kubeval
   - Ensure all tests pass, ask the user if questions arise
 
-- [~] 10. Implement PII redaction sidecar container
+- [x] 10. Implement PII redaction sidecar container
     - Create new Kotlin module for PII redaction service
     - Implement HTTP proxy server that intercepts outbound LLM requests
     - Implement PII detection using regex patterns for names and coordinates
@@ -176,13 +176,13 @@ This implementation plan covers the complete DevOps production deployment for th
     - Add configuration for redaction rules and PII patterns
     - _Requirements: 5.1, 5.2, 5.3, 5.4_
 
-  - [~] 10.1 Implement audit logging for PII redaction
+  - [x] 10.1 Implement audit logging for PII redaction
     - Create audit log data model (timestamp, request_id, pii_detected, redactions_applied, destination)
     - Implement audit log writer to stdout in JSON format
     - Log all external API calls with PII detection results
     - _Requirements: 5.5_
 
-  - [~] 10.2 Write property test for PII redaction completeness
+  - [x] 10.2 Write property test for PII redaction completeness
     - **Property 1: PII Redaction Completeness**
     - **Validates: Requirements 5.3**
     - Generate random requests with various PII types
@@ -190,7 +190,7 @@ This implementation plan covers the complete DevOps production deployment for th
     - Verify redaction is reversible
     - _Requirements: 5.3_
 
-  - [~] 10.3 Write property test for audit log completeness
+  - [x] 10.3 Write property test for audit log completeness
     - **Property 2: Audit Log Completeness**
     - **Validates: Requirements 5.5**
     - Generate random sequences of external API calls
@@ -199,14 +199,14 @@ This implementation plan covers the complete DevOps production deployment for th
     - Verify chronological ordering
     - _Requirements: 5.5_
 
-  - [~] 10.4 Write unit tests for PII redaction service
+  - [x] 10.4 Write unit tests for PII redaction service
     - Test regex pattern matching for person names
     - Test coordinate redaction
     - Test tokenization and de-tokenization
     - Test error handling for redaction failures
     - _Requirements: 5.2, 5.3_
 
-- [~] 11. Update Deployment template with PII sidecar
+- [x] 11. Update Deployment template with PII sidecar
   - Add sidecar container definition to devops/helm/persons-finder/templates/deployment.yaml
   - Parameterize sidecar image from values.yaml
   - Configure sidecar to listen on localhost proxy port
@@ -216,14 +216,14 @@ This implementation plan covers the complete DevOps production deployment for th
   - Make sidecar optional via values.yaml flag
   - _Requirements: 5.4, 8.2_
 
-- [~] 11.1 Write unit tests for sidecar configuration
+- [x] 11.1 Write unit tests for sidecar configuration
   - Test sidecar container renders when enabled
   - Test sidecar is not rendered when disabled
   - Test sidecar resource configuration
   - Test localhost communication setup
   - _Requirements: 5.4, 8.2_
 
-- [-] 12. Create GitHub Actions CI/CD workflow
+- [x] 12. Create GitHub Actions CI/CD workflow
   - [x] 12.1 Create workflow file structure
     - Create devops/ci/ci-cd.yml (to be copied to .github/workflows/)
     - Create .github/workflows/ directory if not exists
@@ -267,22 +267,22 @@ This implementation plan covers the complete DevOps production deployment for th
     - Push latest tag on successful build
     - _Requirements: 6.6_
 
-  - [~] 12.7 Write unit tests for CI/CD workflow
+  - [x] 12.7 Write unit tests for CI/CD workflow
     - Test workflow file YAML structure
     - Test all required stages are present
     - Test trigger configuration
     - Test security scanning is configured
     - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7_
 
-- [~] 13. Create Terraform configurations for AWS infrastructure
-  - [~] 13.1 Create Terraform backend configuration
+- [x] 13. Create Terraform configurations for AWS infrastructure
+  - [x] 13.1 Create Terraform backend configuration
     - Create devops/terraform/backend.tf for S3 backend configuration
     - Create devops/terraform/versions.tf for Terraform and provider versions
     - Create devops/terraform/variables.tf for global variables
     - Create devops/terraform/outputs.tf for global outputs
     - _Requirements: 8.6_
 
-  - [~] 13.2 Create IAM and OIDC module
+  - [x] 13.2 Create IAM and OIDC module
     - Create devops/terraform/modules/iam/main.tf for IAM resources
     - Create devops/terraform/modules/iam/oidc.tf for GitHub OIDC Provider
     - Create devops/terraform/modules/iam/roles.tf for IAM roles (github-actions, eks-admin, eks-developer)
@@ -295,7 +295,7 @@ This implementation plan covers the complete DevOps production deployment for th
     - Create devops/terraform/modules/iam/trust-policies/eks-nodes.json for EKS nodes trust policy
     - _Requirements: 8.6_
 
-  - [~] 13.3 Create VPC module
+  - [x] 13.3 Create VPC module
     - Create devops/terraform/modules/vpc/main.tf for VPC resources
     - Create devops/terraform/modules/vpc/security-groups.tf for security groups
     - Create devops/terraform/modules/vpc/variables.tf for VPC variables
@@ -304,7 +304,7 @@ This implementation plan covers the complete DevOps production deployment for th
     - Configure NAT gateways and internet gateway
     - _Requirements: 8.6_
 
-  - [~] 13.4 Create EKS module
+  - [x] 13.4 Create EKS module
     - Create devops/terraform/modules/eks/main.tf for EKS cluster
     - Create devops/terraform/modules/eks/aws-auth.tf for aws-auth ConfigMap
     - Create devops/terraform/modules/eks/variables.tf for EKS variables
@@ -315,7 +315,7 @@ This implementation plan covers the complete DevOps production deployment for th
     - Map IAM roles to Kubernetes RBAC groups
     - _Requirements: 8.6_
 
-  - [~] 13.5 Create ECR module
+  - [x] 13.5 Create ECR module
     - Create devops/terraform/modules/ecr/main.tf for ECR repository
     - Create devops/terraform/modules/ecr/variables.tf for ECR variables
     - Create devops/terraform/modules/ecr/outputs.tf for ECR outputs
@@ -324,7 +324,7 @@ This implementation plan covers the complete DevOps production deployment for th
     - Configure repository access policies
     - _Requirements: 8.6_
 
-  - [~] 13.6 Create Secrets Manager module
+  - [x] 13.6 Create Secrets Manager module
     - Create devops/terraform/modules/secrets-manager/main.tf for secrets
     - Create devops/terraform/modules/secrets-manager/variables.tf for secrets variables
     - Create devops/terraform/modules/secrets-manager/outputs.tf for secrets outputs
@@ -332,7 +332,7 @@ This implementation plan covers the complete DevOps production deployment for th
     - Configure KMS encryption for secrets
     - _Requirements: 8.6_
 
-  - [~] 13.7 Create environment-specific configurations
+  - [x] 13.7 Create environment-specific configurations
     - Create devops/terraform/environments/dev/main.tf for dev environment
     - Create devops/terraform/environments/dev/terraform.tfvars for dev variables
     - Create devops/terraform/environments/prod/main.tf for prod environment
@@ -341,7 +341,7 @@ This implementation plan covers the complete DevOps production deployment for th
     - Compose all modules (IAM, VPC, EKS, ECR, Secrets Manager)
     - _Requirements: 8.6_
 
-  - [~] 13.8 Create Terraform documentation
+  - [x] 13.8 Create Terraform documentation
     - Create devops/terraform/README.md with usage instructions
     - Document prerequisites (AWS CLI, Terraform, kubectl)
     - Document deployment steps for each environment
@@ -349,42 +349,42 @@ This implementation plan covers the complete DevOps production deployment for th
     - Document outputs and how to use them
     - _Requirements: 8.6_
 
-- [~] 14. Create Kubernetes RBAC and Security resources
-  - [~] 14.1 Create ServiceAccount template
+- [x] 14. Create Kubernetes RBAC and Security resources
+  - [x] 14.1 Create ServiceAccount template
     - Create devops/helm/persons-finder/templates/serviceaccount.yaml
     - Configure ServiceAccount for application pods
     - Add annotations for IAM role association (IRSA)
     - _Requirements: 3.1_
 
-  - [~] 14.2 Create RBAC templates
+  - [x] 14.2 Create RBAC templates
     - Create devops/helm/persons-finder/templates/rbac.yaml
     - Define Role for application namespace permissions
     - Define RoleBinding to bind ServiceAccount to Role
     - Configure minimal permissions (read ConfigMaps, Secrets)
     - _Requirements: 3.1_
 
-  - [~] 14.3 Create NetworkPolicy template
+  - [x] 14.3 Create NetworkPolicy template
     - Create devops/helm/persons-finder/templates/networkpolicy.yaml
     - Configure ingress rules (allow from Ingress controller)
     - Configure egress rules (allow to external LLM, DNS)
     - Implement default deny policy
     - _Requirements: 3.1_
 
-  - [~] 14.4 Create ImagePullSecret template
+  - [x] 14.4 Create ImagePullSecret template
     - Create devops/helm/persons-finder/templates/imagepullsecret.yaml
     - Configure ECR authentication
     - Support automatic credential refresh
     - _Requirements: 1.1_
 
-  - [~] 14.5 Write unit tests for security resources
+  - [x] 14.5 Write unit tests for security resources
     - Test ServiceAccount renders correctly
     - Test RBAC permissions are minimal
     - Test NetworkPolicy rules
     - Test ImagePullSecret configuration
     - _Requirements: 3.1_
 
-- [~] 15. Create deployment documentation and scripts
-  - [~] 15.1 Create deployment README
+- [x] 15. Create deployment documentation and scripts
+  - [x] 15.1 Create deployment README
     - Create devops/docs/DEPLOYMENT.md with comprehensive deployment guide
     - Document deployment prerequisites (kubectl, helm, docker, terraform)
     - Document Helm Chart structure and values configuration
@@ -395,7 +395,7 @@ This implementation plan covers the complete DevOps production deployment for th
     - Document rollback procedures (helm rollback)
     - _Requirements: 8.1, 8.3, 8.5_
 
-  - [~] 15.2 Create deployment helper scripts
+  - [x] 15.2 Create deployment helper scripts
     - Create devops/scripts/deploy.sh for automated Helm deployment
     - Create devops/scripts/verify.sh for deployment verification
     - Create devops/scripts/local-test.sh for Kind-based testing with Helm
@@ -405,75 +405,75 @@ This implementation plan covers the complete DevOps production deployment for th
     - Add usage documentation in script headers
     - _Requirements: 8.1, 8.3, 8.5, 8.6_
 
-  - [~] 15.3 Create quick start guide
+  - [x] 15.3 Create quick start guide
     - Create devops/docs/QUICKSTART.md for getting started
     - Document fastest path to local deployment
     - Document fastest path to AWS EKS deployment
     - Include troubleshooting common issues
     - _Requirements: 8.1, 8.5_
 
-- [~] 16. Implement application API endpoints
-  - [~] 15.1 Implement Person entity and repository
+- [x] 16. Implement application API endpoints
+  - [x] 15.1 Implement Person entity and repository
     - Create Person entity with JPA annotations (id, name)
     - Create PersonRepository interface extending JpaRepository
     - Configure H2 database schema generation
     - _Requirements: Application data layer_
 
-  - [~] 15.2 Implement Location entity and repository
+  - [x] 15.2 Implement Location entity and repository
     - Create Location entity with JPA annotations (referenceId, latitude, longitude)
     - Create LocationRepository interface extending JpaRepository
     - Add indexes for efficient location queries
     - _Requirements: Application data layer_
 
-  - [~] 15.3 Implement PersonsService and LocationsService
+  - [x] 15.3 Implement PersonsService and LocationsService
     - Create PersonsService interface and implementation
     - Create LocationsService interface and implementation
     - Implement location distance calculation algorithm (Haversine formula)
     - Implement nearby person search logic
     - _Requirements: Application domain layer_
 
-  - [~] 15.4 Implement POST /api/v1/persons endpoint
+  - [x] 15.4 Implement POST /api/v1/persons endpoint
     - Create PersonController with POST endpoint
     - Accept person name in request body
     - Return created person with generated ID
     - Add input validation
     - _Requirements: Application presentation layer_
 
-  - [~] 15.5 Implement PUT /api/v1/persons/{id}/location endpoint
+  - [x] 15.5 Implement PUT /api/v1/persons/{id}/location endpoint
     - Add PUT endpoint to PersonController
     - Accept latitude and longitude in request body
     - Update or create location for person
     - Validate coordinate ranges (-90 to 90 for latitude, -180 to 180 for longitude)
     - _Requirements: Application presentation layer_
 
-  - [~] 15.6 Implement GET /api/v1/persons/{id}/nearby endpoint
+  - [x] 15.6 Implement GET /api/v1/persons/{id}/nearby endpoint
     - Add GET endpoint to PersonController
     - Accept radius query parameter (in kilometers)
     - Return list of person IDs within specified radius
     - Use Haversine formula for distance calculation
     - _Requirements: Application presentation layer_
 
-  - [~] 15.7 Implement GET /api/v1/persons endpoint
+  - [x] 15.7 Implement GET /api/v1/persons endpoint
     - Add GET endpoint to PersonController
     - Accept comma-separated ids query parameter
     - Return list of person details
     - Handle missing persons gracefully
     - _Requirements: Application presentation layer_
 
-  - [~] 15.8 Write unit tests for Person and Location entities
+  - [x] 15.8 Write unit tests for Person and Location entities
     - Test entity creation and validation
     - Test JPA persistence operations
     - Test repository query methods
     - _Requirements: Application data layer_
 
-  - [~] 15.9 Write unit tests for services
+  - [x] 15.9 Write unit tests for services
     - Test PersonsService CRUD operations
     - Test LocationsService location updates
     - Test distance calculation algorithm
     - Test nearby person search logic
     - _Requirements: Application domain layer_
 
-  - [~] 15.10 Write unit tests for API endpoints
+  - [x] 15.10 Write unit tests for API endpoints
     - Test POST /api/v1/persons endpoint
     - Test PUT /api/v1/persons/{id}/location endpoint
     - Test GET /api/v1/persons/{id}/nearby endpoint
@@ -481,33 +481,33 @@ This implementation plan covers the complete DevOps production deployment for th
     - Test input validation and error handling
     - _Requirements: Application presentation layer_
 
-- [~] 16. Update Spring Boot application for production readiness
-  - [~] 16.1 Configure Spring Boot Actuator
+- [x] 16. Update Spring Boot application for production readiness
+  - [x] 16.1 Configure Spring Boot Actuator
     - Add Spring Boot Actuator dependency to build.gradle.kts
     - Configure /actuator/health endpoint
     - Implement readiness and liveness health indicators
     - Configure health endpoint to return 200 when ready, 503 when not ready
     - _Requirements: 9.1, 9.2, 9.3_
 
-  - [~] 16.2 Configure application for environment variable injection
+  - [x] 16.2 Configure application for environment variable injection
     - Update application configuration to read OPENAI_API_KEY from environment
     - Add validation to fail gracefully with clear error if API key missing
     - Implement startup check for required environment variables
     - _Requirements: 2.3, 2.4_
 
-  - [~] 16.3 Write unit tests for health endpoints
+  - [x] 16.3 Write unit tests for health endpoints
     - Test /actuator/health returns 200 when application is ready
     - Test /actuator/health returns 503 when application is not ready
     - Test health endpoint response format
     - _Requirements: 9.1, 9.2, 9.3_
 
-  - [~] 16.4 Write unit tests for environment variable handling
+  - [x] 16.4 Write unit tests for environment variable handling
     - Test application reads API key from environment
     - Test application fails gracefully when API key is missing
     - Test error message clarity
     - _Requirements: 2.3, 2.4_
 
-- [~] 18. Create AI usage documentation
+- [x] 18. Create AI usage documentation
   - Create AI_LOG.md in repository root
   - Document all AI-assisted work with original prompts
   - Document identified flaws or issues in AI-generated content
@@ -515,12 +515,12 @@ This implementation plan covers the complete DevOps production deployment for th
   - Include sections for Dockerfile, Kubernetes manifests, CI/CD workflow, and PII redaction
   - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5_
 
-- [~] 18.1 Write unit tests for AI documentation
+- [x] 18.1 Write unit tests for AI documentation
   - Test AI_LOG.md file exists in repository root
   - Test file contains required sections
   - _Requirements: 10.1, 10.5_
 
-- [~] 19. Final checkpoint - Integration testing and verification
+- [x] 19. Final checkpoint - Integration testing and verification
   - Build Docker image locally and verify it runs
   - Deploy to local Kind/Minikube cluster using Helm
   - Test helm install with different values files

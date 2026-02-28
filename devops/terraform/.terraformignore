@@ -1,0 +1,60 @@
+# .terraformignore — controls which files are uploaded to Terraform Cloud / remote backend
+# Syntax mirrors .gitignore. Patterns are relative to this file's directory.
+
+# Terraform runtime directories (provider binaries, cached modules)
+**/.terraform/*
+
+# State files (managed remotely — never upload local copies)
+*.tfstate
+*.tfstate.backup
+
+# Plan files (binary, environment-specific)
+*.tfplan
+
+# Override files (local developer customisations)
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Terraform CLI config
+.terraformrc
+terraform.rc
+
+# VCS
+.git/
+.gitignore
+.gitattributes
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.bak
+*.tmp
+
+# CI/CD configs (not needed by Terraform runner)
+.github/
+
+# Application source — only infrastructure code is needed
+src/
+build/
+devops/docker/
+devops/helm/
+devops/scripts/
+devops/docs/
+devops/ci/
+
+# Documentation
+*.md
+docs/
+
+# Claude Code / Kiro workspace
+.claude/
+.kiro/
