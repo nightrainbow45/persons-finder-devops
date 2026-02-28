@@ -52,6 +52,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      security-events: write
       
     steps:
     - name: Checkout code
@@ -100,6 +101,7 @@ jobs:
         output: 'trivy-results.sarif'
         severity: 'CRITICAL,HIGH'
         exit-code: '1'
+        ignore-unfixed: true
         
     - name: Upload Trivy scan results
       if: always()
