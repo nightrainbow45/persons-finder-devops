@@ -125,7 +125,7 @@ class DevOpsFolderStructureTest {
         val actualDirs = Files.list(devopsDir)
             .filter { Files.isDirectory(it) }
             .map { it.fileName.toString() }
-            .toList()
+            .collect(java.util.stream.Collectors.toList())
 
         for (concern in expectedConcerns) {
             assertTrue(
