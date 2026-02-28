@@ -1,0 +1,47 @@
+# Production environment values
+replicaCount: 3
+
+image:
+  tag: "1.0.0"
+  pullPolicy: Always
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 70
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+  hosts:
+    - host: persons-finder.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: persons-finder-tls
+      hosts:
+        - persons-finder.example.com
+
+sidecar:
+  enabled: true
+
+networkPolicy:
+  enabled: true
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/actuator/prometheus"

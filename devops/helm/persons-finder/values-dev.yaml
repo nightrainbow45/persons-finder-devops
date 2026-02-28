@@ -1,0 +1,31 @@
+# Development environment values
+replicaCount: 1
+
+image:
+  tag: "dev"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+autoscaling:
+  enabled: false
+
+ingress:
+  enabled: true
+  className: "nginx"
+  hosts:
+    - host: persons-finder-dev.local
+      paths:
+        - path: /
+          pathType: Prefix
+
+sidecar:
+  enabled: false
+
+networkPolicy:
+  enabled: false
