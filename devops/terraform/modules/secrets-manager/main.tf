@@ -8,10 +8,39 @@ resource "aws_kms_key" "secrets" {
   deletion_window_in_days = var.kms_deletion_window_days
   enable_key_rotation     = true
 
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "Enable IAM User Permissions"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowEKSNodeDecrypt"
+        Effect = "Allow"
+        Principal = {
+          AWS = var.eks_node_role_arn
+        }
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+
   tags = merge(var.tags, {
     Name = "${var.project_name}-secrets-kms-${var.environment}"
   })
 }
+
+data "aws_caller_identity" "current" {}
 
 resource "aws_kms_alias" "secrets" {
   name          = "alias/${var.project_name}-secrets-${var.environment}"
