@@ -3,8 +3,19 @@
 # This policy enforces that all pods in the `default` namespace must use
 # container images signed by our cosign KMS key (alias/persons-finder-cosign-prod).
 #
+# ⚠️  ACTIVATION PREREQUISITES (read before applying):
+#   Kyverno's verifyImages webhook needs to call ECR API to fetch image signatures.
+#   Without VPC endpoints for ECR, this call goes through NAT gateway and takes ~11s,
+#   exceeding the 10s webhook timeout.  Either configure:
+#   (a) IRSA for kyverno service account + ECR VPC endpoints  ← recommended
+#   (b) Increase Kyverno webhook timeout: helm upgrade kyverno kyverno/kyverno
+#         --reuse-values --set admissionController.container.args.webhookTimeout=30
+#
+# Apply with:
+#   kubectl apply -f devops/kyverno/verify-image-signatures.yaml
+#
 # Modes:
-#   Audit  — log violations, do NOT block (safe to apply immediately)
+#   Audit  — log violations, do NOT block (safe to apply first)
 #   Enforce — block unsigned images (activate after all running images are signed)
 #
 # Current mode: Audit  ← switch to Enforce once CI signing pipeline is stable
