@@ -14,39 +14,41 @@ on:
 env:
   AWS_REGION: ap-southeast-2
   ECR_REPOSITORY: persons-finder
-  
+  # KMS key ARN for cosign image signing (add to GitHub repository secrets)
+  COSIGN_KMS_ARN: ${{ secrets.COSIGN_KMS_ARN }}
+
 jobs:
   build-and-test:
     name: Build and Test
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
+
     - name: Set up JDK 11
       uses: actions/setup-java@v4
       with:
         java-version: '11'
         distribution: 'temurin'
         cache: 'gradle'
-        
+
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
-      
+
     - name: Build with Gradle
       run: ./gradlew clean build -x test
-      
+
     - name: Run tests
       run: ./gradlew test
-      
+
     - name: Upload test results
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: test-results
         path: build/test-results/
-        
+
   docker-build-and-scan:
     name: Docker Build and Security Scan
     runs-on: ubuntu-latest
@@ -55,24 +57,24 @@ jobs:
       id-token: write
       contents: read
       security-events: write
-      
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
+
     - name: Configure AWS credentials using OIDC
       uses: aws-actions/configure-aws-credentials@v4
       with:
         role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/persons-finder-github-actions-prod
         aws-region: ${{ env.AWS_REGION }}
-        
+
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
-      
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
-      
+
     - name: Extract metadata for Docker
       id: meta
       uses: docker/metadata-action@v5
@@ -82,7 +84,7 @@ jobs:
           type=ref,event=pr
           type=sha,prefix=git-
           type=semver,pattern={{version}}
-          
+
     - name: Build Docker image
       uses: docker/build-push-action@v5
       with:
@@ -93,14 +95,18 @@ jobs:
         tags: ${{ steps.meta.outputs.tags }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
-        
-    - name: Install and run Trivy vulnerability scanner
+
+    # ── Security Gate ──────────────────────────────────────────────
+    - name: Install Trivy
       run: |
         wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
         echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee /etc/apt/sources.list.d/trivy.list
         sudo apt-get update -qq
         sudo apt-get install -y trivy
         trivy --version
+
+    - name: Trivy vulnerability scan (CI gate — CRITICAL/HIGH)
+      run: |
         IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.version }}"
         trivy image \
           --severity CRITICAL,HIGH \
@@ -110,7 +116,27 @@ jobs:
           --no-progress \
           "$IMAGE"
 
+    # ── SBOM Generation ────────────────────────────────────────────
+    - name: Generate SBOM (CycloneDX)
+      run: |
+        IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.version }}"
+        trivy image \
+          --format cyclonedx \
+          --output sbom.cdx.json \
+          --no-progress \
+          "$IMAGE"
+        echo "SBOM generated: $(wc -c < sbom.cdx.json) bytes"
+
+    - name: Upload SBOM artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: sbom-cyclonedx
+        path: sbom.cdx.json
+        retention-days: 90
+
+    # ── Push to ECR ────────────────────────────────────────────────
     - name: Push Docker image to ECR
+      id: push
       if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
       uses: docker/build-push-action@v5
       with:
@@ -123,7 +149,36 @@ jobs:
 
     - name: Image digest
       if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-      run: echo "Image pushed with tags ${{ steps.meta.outputs.tags }}"
+      run: echo "Image pushed — digest ${{ steps.push.outputs.digest }}"
+
+    # ── Image Signing (cosign + KMS) ───────────────────────────────
+    - name: Install cosign
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+      uses: sigstore/cosign-installer@v3
+
+    - name: Sign image with cosign (KMS)
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+      env:
+        COSIGN_YES: "true"
+      run: |
+        IMAGE_REF="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}@${{ steps.push.outputs.digest }}"
+        cosign sign \
+          --key "awskms:///${{ env.COSIGN_KMS_ARN }}" \
+          "$IMAGE_REF"
+        echo "Image signed: $IMAGE_REF"
+
+    - name: Attest SBOM with cosign (KMS)
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+      env:
+        COSIGN_YES: "true"
+      run: |
+        IMAGE_REF="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}@${{ steps.push.outputs.digest }}"
+        cosign attest \
+          --key "awskms:///${{ env.COSIGN_KMS_ARN }}" \
+          --predicate sbom.cdx.json \
+          --type cyclonedx \
+          "$IMAGE_REF"
+        echo "SBOM attestation pushed for: $IMAGE_REF"
 
   helm-deploy:
     name: Deploy to EKS

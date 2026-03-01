@@ -1,0 +1,51 @@
+# Kyverno ClusterPolicy: Verify cosign image signatures
+#
+# This policy enforces that all pods in the `default` namespace must use
+# container images signed by our cosign KMS key (alias/persons-finder-cosign-prod).
+#
+# Modes:
+#   Audit  — log violations, do NOT block (safe to apply immediately)
+#   Enforce — block unsigned images (activate after all running images are signed)
+#
+# Current mode: Audit  ← switch to Enforce once CI signing pipeline is stable
+
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-image-signatures
+  annotations:
+    kyverno.io/kubernetes-version: "1.32"
+    kyverno.io/kyverno-version: "1.17.1"
+    cosign-kms-alias: "alias/persons-finder-cosign-prod"
+    cosign-kms-arn: "arn:aws:kms:ap-southeast-2:190239490233:key/0133148e-4bd6-4c2d-bf95-0903a8e40708"
+spec:
+  # Audit: log violations without blocking; switch to Enforce when ready
+  validationFailureAction: Audit
+  # Only check on admission (not background scan of existing pods)
+  background: false
+
+  rules:
+  - name: verify-cosign-signature
+    match:
+      any:
+      - resources:
+          kinds:
+          - Pod
+          namespaces:
+          - default
+    verifyImages:
+    - imageReferences:
+      - "190239490233.dkr.ecr.ap-southeast-2.amazonaws.com/persons-finder:*"
+      # mutateDigest must be false when validationFailureAction is Audit
+      mutateDigest: false
+      attestors:
+      - count: 1
+        entries:
+        - keys:
+            # Public key of the cosign KMS key (ECC_NIST_P256)
+            # Generated from: aws kms get-public-key | openssl ec -pubin -inform DER -outform PEM
+            publicKeys: |-
+              -----BEGIN PUBLIC KEY-----
+              MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQBjraQ7aXudIDKVTbYWaLKMz77xG
+              Gpo0z9qyZOncz/fiQ8nLtIrle2nB2EjAl4t9Flv1tjy/9fXAwXtlQx+U2Q==
+              -----END PUBLIC KEY-----

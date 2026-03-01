@@ -29,3 +29,13 @@ output "kms_key_alias" {
   description = "Alias of the KMS key used for ECR encryption"
   value       = aws_kms_alias.ecr.name
 }
+
+output "cosign_key_arn" {
+  description = "ARN of the asymmetric KMS key used for cosign image signing"
+  value       = aws_kms_key.cosign.arn
+}
+
+output "cosign_key_alias" {
+  description = "Alias of the cosign KMS key"
+  value       = aws_kms_alias.cosign.name
+}

@@ -181,6 +181,27 @@ module "secrets" {
   enable_secret_policy     = true
 }
 
+# --- cosign KMS signing policy for GitHub Actions ---
+# Added here (not in IAM module) to avoid circular dependency:
+#   ECR module uses github_actions_role_arn → depends on IAM
+#   IAM module would need cosign_key_arn → depends on ECR → circular
+resource "aws_iam_role_policy" "github_actions_cosign" {
+  name = "cosign-kms"
+  role = module.iam.github_actions_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "AllowCosignSign"
+        Effect   = "Allow"
+        Action   = ["kms:Sign", "kms:GetPublicKey", "kms:DescribeKey"]
+        Resource = module.ecr.cosign_key_arn
+      }
+    ]
+  })
+}
+
 # --- Outputs ---
 
 output "vpc_id" {
@@ -205,4 +226,8 @@ output "github_actions_role_arn" {
 
 output "kubeconfig_command" {
   value = "aws eks update-kubeconfig --region ${var.aws_region} --name ${local.cluster_name}"
+}
+
+output "cosign_key_arn" {
+  value = module.ecr.cosign_key_arn
 }

@@ -126,6 +126,51 @@ resource "aws_ecr_lifecycle_policy" "main" {
   })
 }
 
+# --- KMS Key for Image Signing (cosign) ---
+# Asymmetric key (ECC_NIST_P256) used by cosign to sign container images.
+# Note: Asymmetric keys do NOT support automatic key rotation.
+
+resource "aws_kms_key" "cosign" {
+  description              = "Asymmetric KMS key for cosign image signing (${var.project_name}-${var.environment})"
+  key_usage                = "SIGN_VERIFY"
+  customer_master_key_spec = "ECC_NIST_P256"
+  deletion_window_in_days  = var.kms_deletion_window_days
+  enable_key_rotation      = false # Asymmetric keys do not support auto-rotation
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "EnableRootManagement"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowCICDSign"
+        Effect = "Allow"
+        Principal = {
+          AWS = var.github_actions_role_arn
+        }
+        Action   = ["kms:Sign", "kms:GetPublicKey", "kms:DescribeKey"]
+        Resource = "*"
+      }
+    ]
+  })
+
+  tags = merge(var.tags, {
+    Name = "${var.project_name}-cosign-kms-${var.environment}"
+  })
+}
+
+resource "aws_kms_alias" "cosign" {
+  name          = "alias/${var.project_name}-cosign-${var.environment}"
+  target_key_id = aws_kms_key.cosign.key_id
+}
+
 # --- Repository Policy ---
 # Grants pull access to the EKS node role and push access to CI/CD role
 
