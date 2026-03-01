@@ -77,10 +77,8 @@ jobs:
       with:
         images: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}
         tags: |
-          type=ref,event=branch
           type=ref,event=pr
           type=sha,prefix={{branch}}-
-          type=raw,value=latest,enable={{is_default_branch}}
           
     - name: Build Docker image
       uses: docker/build-push-action@v5
