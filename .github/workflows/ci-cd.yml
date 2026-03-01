@@ -93,23 +93,22 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
         
+    - name: Install Trivy
+      run: |
+        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+          | sudo sh -s -- -b /usr/local/bin v0.69.1
+
     - name: Run Trivy vulnerability scanner
-      uses: aquasecurity/trivy-action@master
-      with:
-        image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.version }}
-        format: 'sarif'
-        output: 'trivy-results.sarif'
-        severity: 'CRITICAL,HIGH'
-        exit-code: '1'
-        ignore-unfixed: true
-        trivyignores: .trivyignore
-        
-    - name: Upload Trivy scan results
-      if: always()
-      uses: github/codeql-action/upload-sarif@v3
-      with:
-        sarif_file: 'trivy-results.sarif'
-        
+      run: |
+        IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.version }}"
+        trivy image \
+          --severity CRITICAL,HIGH \
+          --ignore-unfixed \
+          --ignorefile .trivyignore \
+          --exit-code 1 \
+          --no-progress \
+          "$IMAGE"
+
     - name: Push Docker image to ECR
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
       uses: docker/build-push-action@v5
