@@ -46,11 +46,9 @@ spec:
         env:
         - name: SPRING_PROFILES_ACTIVE
           value: "prod"
-        {{- if .Values.secrets.create }}
         envFrom:
         - secretRef:
             name: {{ include "persons-finder.fullname" . }}-secrets
-        {{- end }}
         livenessProbe:
           {{- toYaml .Values.probes.liveness | nindent 12 }}
         readinessProbe:
