@@ -20,6 +20,9 @@ RUN gradle clean build -x test --no-daemon
 # Stage 2: Runtime stage
 FROM eclipse-temurin:11.0.26_4-jre-alpine
 
+# Upgrade Alpine packages to patch OS-level CVEs (gnutls, libpng, etc.)
+RUN apk update && apk upgrade --no-cache
+
 # Create non-root user for security
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 

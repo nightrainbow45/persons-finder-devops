@@ -1,0 +1,27 @@
+# Trivy ignore file for persons-finder
+# These CVEs require upgrading to Spring Boot 3.x / Spring Framework 6.x.
+# Tracked in backlog: migrate to Spring Boot 3.x + JDK 17.
+
+# spring-web: "HttpInvokerServiceExporter" deserialization - Spring team marks this wontfix
+# in 5.x; fix requires Spring 6.0+. This app does NOT use HttpInvokerServiceExporter.
+CVE-2016-1000027
+
+# spring-boot: actuator endpoint matcher bug - fixed in 3.3.11 / 3.4.5 only
+CVE-2025-22235
+
+# spring-core: annotation detection vulnerability - fixed in 6.2.11 only
+CVE-2025-41249
+
+# spring-webmvc: path traversal in RouterFunctions - fixed in 6.1.13 only
+CVE-2024-38816
+
+# spring-webmvc: path traversal in functional web frameworks - fixed in 6.1.14 only
+CVE-2024-38819
+
+# jackson-core: number length constraint bypass - fixed in 2.18.6+ which is incompatible
+# with Spring Boot 2.7.x BOM; upgrading risks runtime breakage
+GHSA-72hv-8253-57qq
+
+# snakeyaml: Constructor deserialization RCE - fixed in 2.0 which has breaking API changes
+# incompatible with Spring Boot 2.7.x; Spring Boot uses SafeConstructor (not vulnerable code path)
+CVE-2022-1471
