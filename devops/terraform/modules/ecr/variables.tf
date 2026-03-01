@@ -45,6 +45,12 @@ variable "enable_access_policy" {
   default     = false
 }
 
+variable "kms_deletion_window_days" {
+  description = "KMS key deletion window in days (7-30)"
+  type        = number
+  default     = 30
+}
+
 variable "tags" {
   description = "Additional tags for resources"
   type        = map(string)
