@@ -14,8 +14,9 @@ on:
 env:
   AWS_REGION: ap-southeast-2
   ECR_REPOSITORY: persons-finder
-  # KMS key ARN for cosign image signing (add to GitHub repository secrets)
-  COSIGN_KMS_ARN: ${{ secrets.COSIGN_KMS_ARN }}
+  # KMS key ARN for cosign image signing (ECC_NIST_P256, alias/persons-finder-cosign-prod)
+  # Not a secret: ARN is a resource identifier that cannot be used without AWS auth.
+  COSIGN_KMS_ARN: arn:aws:kms:ap-southeast-2:190239490233:key/0133148e-4bd6-4c2d-bf95-0903a8e40708
 
 jobs:
   build-and-test:
