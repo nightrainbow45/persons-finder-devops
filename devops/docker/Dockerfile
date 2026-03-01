@@ -1,6 +1,6 @@
 # Multi-stage Docker build for Persons Finder Spring Boot application
 # Stage 1: Build stage
-FROM gradle:7.6-jdk11 AS builder
+FROM gradle:7.6.4-jdk11-focal AS builder
 
 WORKDIR /app
 
@@ -18,7 +18,7 @@ COPY src ./src
 RUN gradle clean build -x test --no-daemon
 
 # Stage 2: Runtime stage
-FROM eclipse-temurin:11-jre-alpine
+FROM eclipse-temurin:11.0.26_4-jre-alpine
 
 # Create non-root user for security
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
