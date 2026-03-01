@@ -93,13 +93,13 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
         
-    - name: Install Trivy
+    - name: Install and run Trivy vulnerability scanner
       run: |
-        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-          | sudo sh -s -- -b /usr/local/bin v0.69.1
-
-    - name: Run Trivy vulnerability scanner
-      run: |
+        curl -sSfL https://github.com/aquasecurity/trivy/releases/download/v0.69.1/trivy_0.69.1_Linux-64bit.tar.gz \
+          -o /tmp/trivy.tar.gz
+        tar xzf /tmp/trivy.tar.gz -C /tmp trivy
+        sudo mv /tmp/trivy /usr/local/bin/trivy
+        trivy --version
         IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.version }}"
         trivy image \
           --severity CRITICAL,HIGH \
