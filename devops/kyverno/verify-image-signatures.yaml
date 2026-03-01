@@ -28,7 +28,7 @@ metadata:
     kyverno.io/kubernetes-version: "1.32"
     kyverno.io/kyverno-version: "1.17.1"
     cosign-kms-alias: "alias/persons-finder-cosign-prod"
-    cosign-kms-arn: "arn:aws:kms:ap-southeast-2:190239490233:key/0133148e-4bd6-4c2d-bf95-0903a8e40708"
+    cosign-kms-arn: "arn:aws:kms:ap-southeast-2:190239490233:key/6e0f596a-0608-45de-bf42-d9ddb8ea960f"
 spec:
   # Enforce: block pods whose image signature cannot be verified
   # (switched from Audit after IRSA was configured and ECR calls complete in ~1s)
@@ -61,6 +61,6 @@ spec:
             # Generated from: aws kms get-public-key | openssl ec -pubin -inform DER -outform PEM
             publicKeys: |-
               -----BEGIN PUBLIC KEY-----
-              MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQBjraQ7aXudIDKVTbYWaLKMz77xG
-              Gpo0z9qyZOncz/fiQ8nLtIrle2nB2EjAl4t9Flv1tjy/9fXAwXtlQx+U2Q==
+              MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEV/I0wjO3J+vMUFzHgXvt5mYmZK3s
+              JoH79cL9fSUFQODmG1NhcU2GVUrs3mgQIJy/YhjL0zK4qL9sfTAoB7bLyA==
               -----END PUBLIC KEY-----

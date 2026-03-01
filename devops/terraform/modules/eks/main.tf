@@ -129,6 +129,28 @@ resource "aws_iam_role_policy_attachment" "ecr_read_only" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
+# --- Node Launch Template ---
+# Sets IMDS hop limit to 2 so pods can reach EC2 Instance Metadata Service.
+# (Default hop limit is 1, which only allows the node itself to reach IMDS.)
+
+resource "aws_launch_template" "eks_nodes" {
+  name_prefix = "${var.project_name}-${var.environment}-nodes-"
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "optional"
+    http_put_response_hop_limit = 2
+  }
+
+  tags = merge(var.tags, {
+    Name = "${var.project_name}-nodes-lt-${var.environment}"
+  })
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
 # --- Managed Node Group ---
 
 resource "aws_eks_node_group" "main" {
@@ -139,6 +161,11 @@ resource "aws_eks_node_group" "main" {
 
   instance_types = [var.node_instance_type]
   capacity_type  = var.capacity_type
+
+  launch_template {
+    id      = aws_launch_template.eks_nodes.id
+    version = aws_launch_template.eks_nodes.latest_version
+  }
 
   scaling_config {
     desired_size = var.node_desired_count
