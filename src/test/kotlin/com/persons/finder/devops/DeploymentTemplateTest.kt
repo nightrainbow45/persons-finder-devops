@@ -95,10 +95,16 @@ class DeploymentTemplateTest {
     }
 
     @Test
-    fun `envFrom secretRef should be conditional on secrets create`() {
+    fun `envFrom secretRef should always be present regardless of secrets create`() {
+        // secrets.create controls whether Helm creates the Secret resource,
+        // NOT whether the pod mounts it. The pod always needs the secret (ESO creates it).
         assertTrue(
-            templateContent.contains(".Values.secrets.create"),
-            "envFrom secretRef should be conditional on .Values.secrets.create"
+            templateContent.contains("envFrom"),
+            "envFrom should always be present so ESO-managed secrets are injected"
+        )
+        assertFalse(
+            templateContent.contains("{{- if .Values.secrets.create }}\n        envFrom"),
+            "envFrom must NOT be gated on secrets.create; that flag only controls Secret resource creation"
         )
     }
 
