@@ -54,7 +54,9 @@ provider "kubernetes" {
 # --- Local Variables ---
 
 locals {
-  cluster_name = "${var.project_name}-${var.environment}"
+  cluster_name     = "${var.project_name}-${var.environment}"
+  # OIDC issuer without the https:// prefix, used in IAM trust conditions
+  oidc_issuer_host = replace(module.eks.cluster_oidc_issuer_url, "https://", "")
 }
 
 # --- Variables ---
@@ -181,6 +183,62 @@ module "secrets" {
   enable_secret_policy     = true
 }
 
+# --- EKS OIDC Identity Provider (required for IRSA) ---
+# The EKS cluster exposes an OIDC issuer URL. Registering it as an IAM OIDC
+# provider lets pods assume IAM roles via projected service account tokens.
+
+data "tls_certificate" "eks" {
+  url = module.eks.cluster_oidc_issuer_url
+}
+
+resource "aws_iam_openid_connect_provider" "eks" {
+  url             = module.eks.cluster_oidc_issuer_url
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [data.tls_certificate.eks.certificates[0].sha1_fingerprint]
+
+  tags = {
+    Name = "${var.project_name}-eks-oidc-${var.environment}"
+  }
+}
+
+# --- Kyverno IRSA Role ---
+# Kyverno admission controller needs to call ECR to verify cosign signatures.
+# Without IRSA, it would fall back to IMDS, adding ~10s latency that causes
+# the 10s webhook timeout to fire.  IRSA provides direct STS token exchange
+# which is much faster (~1–2s).
+
+resource "aws_iam_role" "kyverno" {
+  name = "${var.project_name}-kyverno-${var.environment}"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.eks.arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "${local.oidc_issuer_host}:sub" = "system:serviceaccount:kyverno:kyverno-admission-controller"
+            "${local.oidc_issuer_host}:aud" = "sts.amazonaws.com"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name = "${var.project_name}-kyverno-${var.environment}"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "kyverno_ecr_readonly" {
+  role       = aws_iam_role.kyverno.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+}
+
 # --- cosign KMS signing policy for GitHub Actions ---
 # Added here (not in IAM module) to avoid circular dependency:
 #   ECR module uses github_actions_role_arn → depends on IAM
@@ -230,4 +288,9 @@ output "kubeconfig_command" {
 
 output "cosign_key_arn" {
   value = module.ecr.cosign_key_arn
+}
+
+output "kyverno_role_arn" {
+  value       = aws_iam_role.kyverno.arn
+  description = "IRSA role ARN for Kyverno admission controller (annotate kyverno-admission-controller SA)"
 }

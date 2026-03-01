@@ -30,8 +30,9 @@ metadata:
     cosign-kms-alias: "alias/persons-finder-cosign-prod"
     cosign-kms-arn: "arn:aws:kms:ap-southeast-2:190239490233:key/0133148e-4bd6-4c2d-bf95-0903a8e40708"
 spec:
-  # Audit: log violations without blocking; switch to Enforce when ready
-  validationFailureAction: Audit
+  # Enforce: block pods whose image signature cannot be verified
+  # (switched from Audit after IRSA was configured and ECR calls complete in ~1s)
+  validationFailureAction: Enforce
   # Only check on admission (not background scan of existing pods)
   background: false
 
@@ -47,8 +48,11 @@ spec:
     verifyImages:
     - imageReferences:
       - "190239490233.dkr.ecr.ap-southeast-2.amazonaws.com/persons-finder:*"
-      # mutateDigest must be false when validationFailureAction is Audit
+      # mutateDigest: don't rewrite tag → @sha256 in pod spec (ECR IMMUTABLE tags are safe)
       mutateDigest: false
+      # verifyDigest: don't REQUIRE a digest reference; tag reference is sufficient
+      # because our ECR repo uses IMMUTABLE tags — a given tag always maps to the same image
+      verifyDigest: false
       attestors:
       - count: 1
         entries:
