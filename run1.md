@@ -237,6 +237,102 @@ trivyignores: .trivyignore
 
 ---
 
+---
+
+## Session 2 — CI 故障诊断与修复 / Session 2: CI Failure Diagnosis & Fix
+
+> 日期 / Date: 2026-03-01（同日第二次对话 / same day, second session）
+
+### 2.1 诊断 CI 持续失败 / Diagnosed Persistent CI Failure
+
+**现象 / Observation:**
+commit `f6907ff` 推送后，CI 仍然失败（结论：`failure`）。
+
+**定位过程 / Diagnosis steps:**
+```bash
+gh run list --limit 5   # → 最新 run 22532374819 = failure
+gh run view 22532374819 # → "Run Trivy vulnerability scanner" + "Upload Trivy scan results" 均失败
+```
+
+**关键日志 / Key log line:**
+```
+##[error]Path does not exist: trivy-results.sarif
+```
+
+**根本原因 / Root cause:**
+**不是 CVE 问题，是 CI 基础设施问题。**
+
+`aquasecurity/trivy-action@master` 在 CI runner 中需要：
+1. 从 GitHub Releases 下载 trivy 二进制 → **下载失败（无错误日志，静默退出）**
+2. 从 `aquasecurity/trivy` repo 获取 SARIF 模板 → `git fetch` 两次 exit 128，第三次才成功
+
+因 trivy 二进制从未被成功安装，trivy 未执行，`trivy-results.sarif` 不存在，两个 step 连锁失败。
+
+### 2.2 本地扫描验证：CVE 已全部解决 / Local Scan Confirms 0 CVEs
+
+```bash
+docker build --platform linux/amd64 -f devops/docker/Dockerfile -t persons-finder-local:trivy-test .
+trivy image --severity CRITICAL,HIGH --ignore-unfixed --ignorefile .trivyignore \
+  --no-progress persons-finder-local:trivy-test
+```
+
+**结果 / Result:**
+```
+alpine 3.21.3  → 0 vulnerabilities
+app/app.jar    → 0 vulnerabilities
+```
+
+CVE 修复代码（commit `f6907ff`）完全正确，问题仅在 CI 工具链。
+
+### 2.3 修复 CI：替换 trivy-action 为直接安装 / Fixed CI Workflow
+
+**文件改动 / File changed:** `.github/workflows/ci-cd.yml`
+
+**修改前 / Before:**
+```yaml
+- name: Run Trivy vulnerability scanner
+  uses: aquasecurity/trivy-action@master
+  with:
+    format: 'sarif'
+    output: 'trivy-results.sarif'
+    ...
+
+- name: Upload Trivy scan results
+  if: always()
+  uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: 'trivy-results.sarif'
+```
+
+**修改后 / After:**
+```yaml
+- name: Install Trivy
+  run: |
+    curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+      | sudo sh -s -- -b /usr/local/bin v0.69.1
+
+- name: Run Trivy vulnerability scanner
+  run: |
+    IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.version }}"
+    trivy image \
+      --severity CRITICAL,HIGH \
+      --ignore-unfixed \
+      --ignorefile .trivyignore \
+      --exit-code 1 \
+      --no-progress \
+      "$IMAGE"
+```
+
+**改动理由 / Rationale:**
+- `trivy-action@master` 的 JS 二进制下载不稳定，且依赖 git fetch 获取 SARIF 模板
+- 改用 `curl` 脚本安装，简单可靠，输出直接显示在 CI 日志（table 格式）
+- 去掉 SARIF upload step，消除对 GitHub Advanced Security 的依赖
+- 本地确认 0 CVE，CI 一旦 trivy 正常运行，扫描必然通过
+
+**状态 / Status:** 已编辑文件，**尚未 commit/push**（用户决定开新窗口再处理）
+
+---
+
 ## 2. 当前状态 / Current Status
 
 ### 已完成 / Completed ✅
@@ -254,11 +350,13 @@ trivyignores: .trivyignore
 | CI OIDC 认证 | ✅ 通过 |
 | CI Docker Build | ✅ 通过 |
 | Dockerfile best practices | ✅ Multi-stage + Non-root + Pinned versions |
+| CVE 修复（代码层面）| ✅ 本地 trivy 扫描 0 CVE |
+| CI Trivy 工具链修复 | ✅ workflow 已修改（待 push 验证）|
 
 ### 待确认 / Pending Verification ⏳
 | 组件 / Component | 状态 / Status |
 |---|---|
-| CI Trivy 扫描 | ⏳ 本次修复后需 push 验证 |
+| CI Trivy 扫描 | ⏳ 需 push `.github/workflows/ci-cd.yml` 触发验证 |
 | ECR image push | ⏳ 等 Trivy 通过后自动触发 |
 | Helm deploy to EKS | ⏳ 需手动执行 |
 
@@ -272,13 +370,13 @@ trivyignores: .trivyignore
 
 ## 3. 新对话框应先做什么 / What To Do First in Next Session
 
-### Step 1：提交并推送本次代码修改（验证 Trivy 修复）
+### Step 1：提交并推送 workflow 修复（触发 CI 验证）
 ```bash
-git add build.gradle.kts devops/docker/Dockerfile .trivyignore .github/workflows/ci-cd.yml
-git commit -m "fix: patch Trivy CVEs - upgrade tomcat/logback/spring/jackson/h2/snakeyaml + trivyignore"
+git add .github/workflows/ci-cd.yml
+git commit -m "fix: replace trivy-action with direct install to fix CI infrastructure failure"
 git push origin main
 ```
-然后在 GitHub Actions 观察 CI 是否通过。
+然后在 GitHub Actions 观察 CI 是否通过（重点看 "Install Trivy" 和 "Run Trivy vulnerability scanner" step）。
 
 ### Step 2：CI 通过后，镜像会自动推送到 ECR
 ECR repo: `190239490233.dkr.ecr.ap-southeast-2.amazonaws.com/persons-finder`
