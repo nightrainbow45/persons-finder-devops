@@ -8,16 +8,21 @@
 # Arguments:
 #   ENVIRONMENT   Target environment: dev | prod (default: dev)
 #
+# Namespace mapping:
+#   prod → default   (matches CI/CD pipeline and Kyverno policy scope)
+#   dev  → dev
+#
 # Options:
 #   --tag TAG           Docker image tag to deploy (default: latest)
-#   --namespace NS      Kubernetes namespace (default: same as environment)
+#   --namespace NS      Override Kubernetes namespace
 #   --dry-run           Render templates without installing
 #   --set KEY=VALUE     Pass additional Helm --set flags
 #   -h, --help          Show this help message
 #
 # Examples:
+#   ./devops/scripts/deploy.sh prod --tag git-abc1234
+#   ./devops/scripts/deploy.sh prod --tag 1.4.2
 #   ./devops/scripts/deploy.sh dev
-#   ./devops/scripts/deploy.sh prod --tag v1.2.3
 #   ./devops/scripts/deploy.sh dev --dry-run
 #
 
@@ -56,7 +61,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     -h|--help)
-      head -25 "$0" | tail -22
+      head -30 "$0" | tail -28
       exit 0
       ;;
     *)
@@ -72,13 +77,21 @@ if [[ "${ENVIRONMENT}" != "dev" && "${ENVIRONMENT}" != "prod" ]]; then
   exit 1
 fi
 
-NAMESPACE="${NAMESPACE:-${ENVIRONMENT}}"
+# Namespace mapping: prod app lives in 'default'; dev in 'dev'
+if [[ -z "${NAMESPACE}" ]]; then
+  if [[ "${ENVIRONMENT}" == "prod" ]]; then
+    NAMESPACE="default"
+  else
+    NAMESPACE="${ENVIRONMENT}"
+  fi
+fi
+
 VALUES_FILE="${CHART_DIR}/values-${ENVIRONMENT}.yaml"
 
 # Check prerequisites
 for cmd in kubectl helm; do
   if ! command -v "${cmd}" &>/dev/null; then
-    echo "Error: '${cmd}' is not installed. See devops/docs/DEPLOYMENT.md for prerequisites."
+    echo "Error: '${cmd}' is not installed."
     exit 1
   fi
 done
@@ -89,20 +102,25 @@ if [[ ! -f "${VALUES_FILE}" ]]; then
   exit 1
 fi
 
-# Verify kubectl context
 echo "==> Current kubectl context: $(kubectl config current-context)"
-echo "==> Deploying to namespace: ${NAMESPACE}"
-echo "==> Environment: ${ENVIRONMENT}"
-echo "==> Image tag: ${IMAGE_TAG}"
+echo "==> Environment:  ${ENVIRONMENT}"
+echo "==> Namespace:    ${NAMESPACE}"
+echo "==> Image tag:    ${IMAGE_TAG}"
 echo ""
 
-# Deploy with Helm
+# For prod, the K8s secret is managed by ESO (not created by Helm)
+SECRETS_FLAG="--set secrets.create=false"
+if [[ "${ENVIRONMENT}" == "dev" ]]; then
+  SECRETS_FLAG="--set secrets.create=true"
+fi
+
 echo "==> Running helm upgrade --install ..."
 helm upgrade --install "${RELEASE_NAME}" "${CHART_DIR}" \
   -f "${VALUES_FILE}" \
   --namespace "${NAMESPACE}" \
   --create-namespace \
   --set image.tag="${IMAGE_TAG}" \
+  ${SECRETS_FLAG} \
   "${EXTRA_SETS[@]+"${EXTRA_SETS[@]}"}" \
   ${DRY_RUN} \
   --wait \
@@ -110,8 +128,8 @@ helm upgrade --install "${RELEASE_NAME}" "${CHART_DIR}" \
 
 if [[ -z "${DRY_RUN}" ]]; then
   echo ""
-  echo "==> Deployment complete. Verifying..."
+  echo "==> Deployment complete."
   helm status "${RELEASE_NAME}" -n "${NAMESPACE}"
   echo ""
-  echo "Run './devops/scripts/verify.sh ${NAMESPACE}' for full verification."
+  echo "Run './devops/scripts/verify.sh ${ENVIRONMENT}' for full verification."
 fi
