@@ -176,10 +176,33 @@ CloudWatch 处理链
 | Commit | 说明 |
 |---|---|
 | `d676afa` | `feat(observability): implement Layer 4 AI Firewall — Fluent Bit + CloudWatch` |
+| `ee19d10` | `docs: add run6.md - session 10 Layer 4 Fluent Bit + CloudWatch implementation` |
+| `0d1680b` | `docs(aifirewall): mark Layer 4 as complete in AIfirewall.md` |
 
 ---
 
-## 七、AI Firewall 全部 Layer 完成状态
+## 七、CI/CD 验证（最终 push）
+
+AIfirewall.md 更新后触发的 CI run（`22561483122`）全部通过：
+
+```
+✓ Build and Test          58s
+✓ Docker Build and Scan   2m4s
+  - Trivy 主镜像：0 CVE ✅
+  - SBOM 生成 ✅
+  - ECR push ✅
+  - cosign sign + attest ✅
+  - Trivy sidecar：0 CVE ✅
+  - sidecar ECR push ✅
+  - sidecar cosign sign ✅
+✓ Deploy to EKS           1m1s
+  - Helm deploy ✅
+  - Verify deployment ✅
+```
+
+---
+
+## 八、AI Firewall 全部 Layer 完成状态
 
 | Layer | 组件 | 状态 |
 |---|---|---|
@@ -197,7 +220,7 @@ CloudWatch 处理链
 
 ---
 
-## 八、下次对话的起点
+## 九、下次对话的起点
 
 - AI Firewall 全部 4 层已落地并通过端到端验证
 - CloudWatch 数据流在有 LLM 请求时才会产生日志（目前 log group 存在但无 stream，正常）

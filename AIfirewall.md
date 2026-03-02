@@ -364,7 +364,7 @@ cosign sign --key awskms:///alias/persons-finder-cosign-prod \
          ▼ (Layer 4)
 8. AuditLogger writes to stdout:
    {"type":"PII_AUDIT","piiDetected":["PERSON_NAME","COORDINATE"],"redactionsApplied":3,...}
-   → Fluent Bit → CloudWatch → Grafana dashboard
+   → Fluent Bit → CloudWatch /eks/persons-finder/pii-audit → Metric Filter → Alarm
 ```
 
 ---
@@ -393,6 +393,8 @@ cosign sign --key awskms:///alias/persons-finder-cosign-prod \
 | CloudWatch Alarm | 4 | ✅ Built | `persons-finder-pii-leak-risk` (zero-redaction trigger) |
 | Grafana PII dashboard | 4 | 🔲 Optional enhancement | — |
 | Kyverno (image signing) | 4 | ✅ Enforce mode | `devops/kyverno/` |
+
+**End-to-end CI/CD validation (run 22561483122):** Build ✅ · Trivy 0 CVE ✅ · SBOM ✅ · ECR push ✅ · cosign sign+attest ✅ · Helm deploy ✅ · verify.sh 17/17 ✅
 
 ---
 
