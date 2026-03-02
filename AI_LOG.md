@@ -13,6 +13,17 @@ This document records all AI-assisted work performed during the DevOps productio
 5. [Terraform Configurations](#5-terraform-configurations)
 6. [Application API Endpoints](#6-application-api-endpoints)
 7. [Spring Boot Actuator Configuration](#7-spring-boot-actuator-configuration)
+8. [Go PII Redaction Sidecar](#8-go-pii-redaction-sidecar)
+9. [Kyverno Image Signature Enforcement](#9-kyverno-image-signature-enforcement)
+10. [Layer 3 NetworkPolicy (VPC CNI eBPF)](#10-layer-3-networkpolicy-vpc-cni-ebpf)
+11. [Layer 4 Fluent Bit DaemonSet + CloudWatch](#11-layer-4-fluent-bit-daemonset--cloudwatch)
+12. [Supply Chain Security (cosign + SBOM + Periodic Re-scan)](#12-supply-chain-security-cosign--sbom--periodic-re-scan)
+13. [GitHub Actions OIDC Multi-Repository Trust Policy](#13-github-actions-oidc-multi-repository-trust-policy)
+14. [EKS Node Pod Capacity and Rolling Update Deadlock](#14-eks-node-pod-capacity-and-rolling-update-deadlock)
+15. [Kyverno Admission Webhook Latency and IRSA Chain](#15-kyverno-admission-webhook-latency-and-irsa-chain)
+16. [Deployer RBAC Latent Gap Exposed on Fresh Cluster Rebuild](#16-deployer-rbac-latent-gap-exposed-on-fresh-cluster-rebuild)
+17. [KMS Cosign Key Lifecycle After Terraform Destroy](#17-kms-cosign-key-lifecycle-after-terraform-destroy)
+18. [Go Sidecar Outbound Proxy Direction Architecture](#18-go-sidecar-outbound-proxy-direction-architecture)
 
 ---
 
@@ -409,14 +420,175 @@ Extend the CI pipeline with supply chain security: generate a CycloneDX SBOM aft
 
 ---
 
+## 13. GitHub Actions OIDC Multi-Repository Trust Policy
+
+**File:** `devops/terraform/modules/iam/trust-policies/github-oidc.json`
+
+### Original Prompt / Intent
+
+Generate an AWS IAM trust policy for GitHub Actions OIDC authentication. The policy should allow the CI/CD pipeline to assume an IAM role for ECR push and EKS deployment, scoped to the specific GitHub organisation and repository.
+
+### What Was Generated
+
+A trust policy using `StringEquals` to match the OIDC sub-claim against `repo:${github_org}/${github_repo}:*` — a single exact-match pattern for one repository.
+
+### Identified Flaws / Issues
+
+1. **Single-repository scope with wrong repo name:** Application source code lives in `persons-finder` but the CI/CD workflow runs from `persons-finder-devops`. The OIDC token sub-claim carries the devops repo name, which did not match the trust policy, causing every CI run to fail with `AccessDenied`.
+2. **`StringEquals` cannot match multiple values or wildcards:** For multi-value matching, `StringLike` is required. `StringEquals` performs exact string comparison and silently rejects all other values without explanation in the error output.
+3. **No documentation of split-repo convention:** The generated policy had no comments explaining the sub-claim format or the common split application/devops repository pattern.
+
+### Fixes Applied
+
+1. Changed condition operator from `StringEquals` to `StringLike` and added both repository patterns as a list, covering `persons-finder:*` and `persons-finder-devops:*`.
+2. Parameterised via `${github_org}` and `${github_repo}` Terraform variables so the pattern generalises without hardcoding.
+3. Added inline comments documenting the OIDC sub-claim format and the two-repo convention.
+
+---
+
+## 14. EKS Node Pod Capacity and Rolling Update Deadlock
+
+**File:** `devops/helm/persons-finder/templates/deployment.yaml`
+
+### Original Prompt / Intent
+
+Generate a Kubernetes Deployment with a rolling update strategy that provides zero-downtime upgrades.
+
+### What Was Generated
+
+A Deployment using the Kubernetes defaults: `maxSurge: 1`, `maxUnavailable: 0`.
+
+### Identified Flaws / Issues
+
+1. **Default `maxSurge: 1` deadlocks on ENI-constrained nodes:** t3.small instances have a hard ENI limit of 11 pods per node. At baseline capacity (11 pods scheduled), a `maxSurge: 1` upgrade attempts to schedule a 12th pod before terminating the old one. The new pod stays `Pending` indefinitely — the upgrade never progresses and the old pod is never released.
+2. **ENI prefix delegation cannot be enabled at runtime:** The natural workaround — enabling `ENABLE_PREFIX_DELEGATION=true` via `kubectl set env` on the `aws-node` DaemonSet — caused the VPC CNI agent to restart in a transition state. During the transition, new pods could not obtain IP addresses (`failed to assign an IP address to container`), resulting in a brief service outage. ENI prefix delegation requires node replacement via a new Launch Template to take effect cleanly.
+3. **No capacity planning comment in generated manifest:** The AI output contained no guidance on node instance type pod limits or the scheduling headroom required for rolling updates.
+
+### Fixes Applied
+
+1. Set `maxSurge: 0` and `maxUnavailable: 1` — terminate the running pod first, then schedule the replacement. This trades a brief availability window for schedulability on capacity-constrained nodes, which is the correct trade-off at single-node scale.
+2. Documented the ENI prefix delegation lesson: changes must be applied at the Terraform Launch Template level (`http_put_response_hop_limit`, node group recreation) rather than via live DaemonSet environment variable injection.
+3. Added a comment in `deployment.yaml` explaining the t3.small pod limit and the `maxSurge: 0` rationale for reviewers.
+
+---
+
+## 15. Kyverno Admission Webhook Latency and IRSA Chain
+
+**File:** `devops/kyverno/verify-image-signatures.yaml` + `devops/terraform/environments/prod/main.tf`
+
+### Original Prompt / Intent
+
+Generate a Kyverno `ClusterPolicy` that enforces cosign signature verification using an AWS KMS key, blocking unsigned images from deploying in the `default` namespace.
+
+### What Was Generated
+
+A `ClusterPolicy` with `validationFailureAction: Audit` and default webhook configuration. No IRSA setup was included or mentioned.
+
+### Identified Flaws / Issues
+
+1. **ECR API call chain latency without IRSA exceeds webhook timeout:** Kyverno's admission webhook must call ECR to retrieve the cosign signature manifest during pod creation. Without IRSA, the credential chain is: EC2 IMDS → node IAM role → STS → ECR `GetAuthorizationToken` → ECR API. On a t3.small node routed through a NAT Gateway (no VPC Endpoint), this chain takes approximately 11 seconds — exceeding Kyverno's default 10-second webhook timeout.
+2. **`failurePolicy: Fail` on the mutating webhook applies regardless of `validationFailureAction`:** Even with `validationFailureAction: Audit`, the Kyverno mutating webhook (`mutate.kyverno.svc-fail`) uses `failurePolicy: Fail`. A timeout on the mutating webhook returns an unconditional admission error, blocking all deployments — regardless of Audit mode intent. The policy cannot be "safely" tested in Audit mode without IRSA.
+3. **`mutateDigest: true` incompatible with Audit mode in Kyverno 1.17.1:** This version rejects policies combining `validationFailureAction: Audit` with the default `mutateDigest: true`, producing a webhook validation error at policy creation time.
+4. **`verifyDigest: true` (default) blocks tag-based references:** The default requires pod specs to use `@sha256:...` digest notation. All existing deployments using tag references (e.g., `git-<sha>`) are blocked even after a successful signature verification pass.
+5. **No prerequisite documentation for Enforce activation:** The generated file contained no guidance on the IRSA configuration required before switching from `Audit` to `Enforce` mode, making the activation sequence non-obvious.
+
+### Fixes Applied
+
+1. Configured IRSA for the `kyverno-admission-controller` ServiceAccount: registered the EKS OIDC issuer as an `aws_iam_openid_connect_provider`, created a dedicated IAM role with trust policy scoped to the exact ServiceAccount, and attached `AmazonEC2ContainerRegistryReadOnly`. ECR API latency dropped from ~11s to ~1s.
+2. Set `mutateDigest: false` — ECR IMMUTABLE tags guarantee tag-to-digest stability; rewriting pod spec tag references to digest format adds operational noise (ArgoCD diff, rollback confusion) with no security benefit.
+3. Set `verifyDigest: false` — with IMMUTABLE tags, a tag reference is as trustworthy as a digest reference.
+4. Added a prerequisite documentation block at the top of the policy file covering: OIDC provider registration, IRSA role annotation, the `Audit → Enforce` promotion checklist, and the `verifyDigest`/`mutateDigest` rationale.
+
+---
+
+## 16. Deployer RBAC Latent Gap Exposed on Fresh Cluster Rebuild
+
+**File:** `devops/terraform/modules/eks/aws-auth.tf`
+
+### Original Prompt / Intent
+
+Generate Terraform resources to map the GitHub Actions IAM role to a Kubernetes group (`deployers`) in the EKS `aws-auth` ConfigMap, granting the CI pipeline permission to run `helm upgrade --install`.
+
+### What Was Generated
+
+An `aws-auth` ConfigMap entry mapping the IAM role ARN to the `deployers` Kubernetes group. No `ClusterRole` or `ClusterRoleBinding` was generated for the group.
+
+### Identified Flaws / Issues
+
+1. **Group identity without RBAC binding grants zero permissions:** An `aws-auth` group mapping creates a Kubernetes identity but confers no access. A Kubernetes group has no authorised actions until a `Role` or `ClusterRole` is bound to it via a `RoleBinding` or `ClusterRoleBinding`. The generated output was structurally incomplete.
+2. **Latent failure: only observable on a fresh cluster rebuild:** The bug went undetected across multiple deployment sessions because the cluster was always operated from an existing Terraform state that happened to have pre-existing RBAC objects from manual operations. The first complete `terraform destroy` + `terraform apply` cycle created a clean cluster where the missing ClusterRole caused every `helm upgrade` call to fail with `secrets is forbidden`.
+3. **Helm release state requires Secret access:** Helm stores release manifests as Kubernetes Secrets (`sh.helm.release.v1.*`). Without `secrets` CRUD permissions in the ClusterRole, `helm upgrade` fails with a `forbidden` error even when the deployed application itself requires no secret access.
+
+### Fixes Applied
+
+1. Added `kubernetes_cluster_role.deployer` in Terraform with the minimum permissions required for `helm upgrade`: CRUD on `deployments`, `services`, `serviceaccounts`, `secrets`, `configmaps`, `ingresses`, `horizontalpodautoscalers`, `roles`, `rolebindings`, and `networkpolicies`.
+2. Added `kubernetes_cluster_role_binding.deployer` binding the `deployers` group to the ClusterRole.
+3. Added `depends_on = [aws_eks_cluster.main]` on both resources to ensure the EKS API server is available before Terraform attempts to create Kubernetes RBAC objects.
+
+---
+
+## 17. KMS Cosign Key Lifecycle After Terraform Destroy
+
+**Files:** `devops/kyverno/verify-image-signatures.yaml` · `.github/workflows/ci-cd.yml` · `devops/scripts/setup-eks.sh`
+
+### Original Prompt / Intent
+
+Generate a Kyverno `ClusterPolicy` that verifies cosign signatures using an inline AWS KMS ECC_NIST_P256 public key, and a CI workflow step that signs images with `cosign sign --key awskms:///`.
+
+### What Was Generated
+
+A policy with an inline PEM public key block and a CI workflow with a hardcoded `COSIGN_KMS_ARN` env variable — both referencing the key created by the initial `terraform apply`.
+
+### Identified Flaws / Issues
+
+1. **AWS KMS asymmetric keys cannot be automatically rotated:** AWS KMS automatic key rotation only applies to symmetric keys. Each `terraform destroy` followed by `terraform apply` creates an entirely new KMS key with a new key ID, ARN, and a completely different ECC public key. Neither the generated policy nor the CI workflow documented this lifecycle dependency.
+2. **Stale public key in Kyverno Enforce policy blocks the entire cluster:** When the policy is not updated after a key rebuild, cosign signs new images with the new key while Kyverno verifies against the old embedded public key. Since the policy is in `Enforce` mode, every pod creation — including system pods — is rejected cluster-wide until the policy is updated.
+3. **Hardcoded KMS ARN in CI workflow with no update instruction:** The ARN was hardcoded in `ci-cd.yml` as a plain `env` variable. After infrastructure rebuild, the workflow continues referencing the old (now-deleted) key ARN, causing `cosign sign` to fail silently or error with a KMS `NotFoundException`.
+4. **No key re-extraction step in setup procedure:** The `setup-eks.sh` script had no step to re-extract the new public key and update the policy after infrastructure rebuild, making every rebuild a potential silent cluster lockout.
+
+### Fixes Applied
+
+1. Added a key extraction and policy update step to `setup-eks.sh` (Step 8): uses `aws kms get-public-key | base64 --decode | openssl ec -pubin -inform DER -outform PEM` to extract the new PEM, updates `verify-image-signatures.yaml` via `sed`, and runs `kubectl apply` before the app is deployed.
+2. Added a prominent warning comment in `setup-eks.sh` and `devops/scripts/README.md`: "After each `terraform destroy + apply`, re-extract the cosign public key and update the Kyverno policy **before** running `helm upgrade`, or Enforce mode will block all pod creation."
+3. Added a `cosign_key_arn` output to `devops/terraform/environments/prod/main.tf` so the new ARN is always visible after `terraform apply` and can be copy-pasted into `ci-cd.yml`.
+
+---
+
+## 18. Go Sidecar Outbound Proxy Direction Architecture
+
+**Files:** `devops/helm/persons-finder/values.yaml` · `devops/helm/persons-finder/templates/deployment.yaml`
+
+### Original Prompt / Intent
+
+Wire the Go PII redaction sidecar container into the Helm Deployment so that the main Spring Boot application routes all LLM API calls through the sidecar proxy before they leave the pod.
+
+### What Was Generated
+
+A sidecar container spec with environment variables `TARGET_HOST: localhost` and `TARGET_PORT: 8080` — pointing the sidecar back at the main application container.
+
+### Identified Flaws / Issues
+
+1. **Proxy direction reversed — sidecar wired as inbound reverse proxy, not outbound forward proxy:** `TARGET_HOST: localhost / TARGET_PORT: 8080` configures the sidecar to forward requests **to** the main application on port 8080. The intended architecture is the opposite: the main application routes LLM calls **to** the sidecar on port 8081, which then forwards to `api.openai.com`. The generated wiring implements a reverse proxy (external → app), not a forward proxy (app → external LLM).
+2. **`LLM_PROXY_URL` never injected into the main container:** The main Spring Boot container had no mechanism to redirect its LLM HTTP calls through the sidecar. Without `LLM_PROXY_URL=http://localhost:8081` injected as an environment variable and consumed by the application, all LLM traffic bypassed the sidecar entirely even when it was running.
+3. **Sidecar liveness probe absent:** No liveness or readiness probe was defined for the sidecar container. Kubernetes had no way to detect if the sidecar process had crashed, leaving the pod in a notionally healthy state while Layer 2 protection was silently offline.
+
+### Fixes Applied
+
+1. Replaced `TARGET_HOST` / `TARGET_PORT` with `LISTEN_PORT: 8081` (sidecar's listen port) and `UPSTREAM_URL: https://api.openai.com` (the real LLM provider endpoint). The sidecar now correctly acts as an outbound forward proxy.
+2. Added conditional injection of `LLM_PROXY_URL: http://localhost:8081` into the main container when `sidecar.enabled: true`, consumed by `EnvironmentConfig.kt` via `@Value("${llm.proxy-url:https://api.openai.com}")`. When the sidecar is disabled (dev), the main container falls back to calling OpenAI directly.
+3. Added `livenessProbe` and `readinessProbe` on the sidecar container pointing to `GET /health` on port 8081, ensuring pod health reflects the state of both containers.
+
+---
+
 ## Summary
 
 All AI-generated artifacts were reviewed for correctness, security, and production readiness. Key themes across the review:
 
 - **Security hardening:** Tightened permissions, restricted endpoint exposure, validated inputs, and ensured non-root execution.
 - **Configuration correctness:** Fixed API versions, added required fields, and corrected parameterization patterns.
-- **Production readiness:** Addressed scalability concerns, cost optimization, and operational documentation gaps.
+- **Production readiness:** Addressed scalability concerns, cost optimisation, and operational documentation gaps.
 - **Testing coverage:** Property-based tests and unit tests were written for all major components to validate correctness across diverse inputs.
 - **Supply chain integrity:** Image signing, SBOM attestation, Kyverno admission enforcement, and periodic re-scanning added layered trust verification beyond what the initial AI output provided.
+- **Infrastructure lifecycle:** Several critical failure modes were only observable after a full `terraform destroy + apply` cycle — including missing RBAC bindings, stale KMS public keys, and OIDC trust policy scope gaps. AI-generated infrastructure requires idempotency and fresh-state testing, not just incremental validation.
 
 Each fix was verified through automated tests (JUnit 5 unit tests and jqwik property-based tests) and live EKS deployments before being committed.
