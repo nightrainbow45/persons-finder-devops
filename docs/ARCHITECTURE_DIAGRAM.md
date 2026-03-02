@@ -1,4 +1,4 @@
-# Persons Finder - Architecture Diagram
+# 2. Persons Finder — Architecture Diagram
 
 ## High-Level Architecture
 

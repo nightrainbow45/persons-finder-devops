@@ -1,4 +1,4 @@
-# Requirement 3: Security & Secrets Management
+# 6. Security & Secrets Management
 
 > **Requirement:** Implement proper secrets management (no hardcoded secrets, use Kubernetes Secrets or Vault). Implement RBAC and network policies. Bonus: pod security contexts, image scanning.
 
@@ -33,6 +33,7 @@
 | Trivy CI scan gate | `ci-cd.yml` lines 110–119 (10 lines) |
 | TLS + cert-manager annotation | `ingress.yaml` lines 12–14 + `values-prod.yaml` lines 33–36 |
 | Ingress rate-limit annotation | `values-prod.yaml` line 27 |
+| Swagger Basic Auth | `basic-auth-secret.yaml` + `ingress.yaml` lines 15–20 — `auth-type: basic` at Ingress level |
 | Kyverno ClusterPolicy spec | `kyverno/verify-image-signatures.yaml` lines 32–67 (36 lines) |
 | CVE suppression policy | `.trivyignore` lines 1–55 (55 lines) |
 
@@ -248,9 +249,9 @@ VPC CNI with `enableNetworkPolicy: true` enforces the policy at the eBPF kernel 
 
 ### 2.6 TLS Termination + Ingress Hardening
 
-TLS is terminated at the NGINX Ingress Controller with a certificate managed by cert-manager (Let's Encrypt).
+TLS is terminated at the NGINX Ingress Controller with a certificate managed by cert-manager (Let's Encrypt). The production domain is `aifindy.digico.cloud`.
 
-> `devops/helm/persons-finder/templates/ingress.yaml` lines 12–14
+**cert-manager integration** — `ingress.yaml` lines 12–14:
 
 ```yaml
     {{- if .Values.ingress.tls }}
@@ -258,21 +259,49 @@ TLS is terminated at the NGINX Ingress Controller with a certificate managed by 
     {{- end }}
 ```
 
+The `ClusterIssuer` (`letsencrypt-prod`) is provisioned via `letsencrypt-prod-issuer.yaml` at cluster bootstrap. cert-manager automatically obtains and renews certificates from Let's Encrypt using the HTTP-01 challenge through the NGINX Ingress Controller.
+
 > `devops/helm/persons-finder/values-prod.yaml` lines 26–36
 
 ```yaml
   annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod   # line 26 — auto-renew TLS cert
-    nginx.ingress.kubernetes.io/rate-limit: "100"       # line 27 — rate-limit: 100 req/s
-  tls:                                                   # line 33
+    cert-manager.io/cluster-issuer: letsencrypt-prod   # auto-renew TLS cert
+    nginx.ingress.kubernetes.io/rate-limit: "100"       # rate-limit: 100 req/s
+  tls:
     - secretName: persons-finder-tls
       hosts:
-        - persons-finder.example.com
+        - aifindy.digico.cloud
 ```
 
-Additional hardening available via `values.yaml`:
-- **IP allowlist** (`ingress.yaml` lines 23–25): `nginx.ingress.kubernetes.io/whitelist-source-range`
-- **Swagger Basic Auth** (`ingress.yaml` lines 15–22): path-level `auth_basic` for `/swagger-ui` and `/v3/api-docs`
+**Swagger UI Basic Auth** — enabled at the Ingress level when `swagger.basicAuth.enabled: true`:
+
+> `devops/helm/persons-finder/templates/ingress.yaml` lines 15–20
+
+```yaml
+    {{- if .Values.swagger.basicAuth.enabled }}
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: persons-finder-basic-auth
+    nginx.ingress.kubernetes.io/auth-realm: "Authentication Required"
+    {{- end }}
+```
+
+> `devops/helm/persons-finder/templates/basic-auth-secret.yaml`
+
+```yaml
+{{- if and .Values.ingress.enabled .Values.swagger.basicAuth.enabled }}
+apiVersion: v1
+kind: Secret
+type: Opaque
+data:
+  auth: {{ .Values.swagger.basicAuth.password | b64enc }}  # htpasswd format
+{{- end }}
+```
+
+The htpasswd-encoded credential is stored in Helm values and base64-encoded into the Secret at deploy time. This protects `/swagger-ui/index.html` and `/v3/api-docs` from unauthenticated access in production without touching application code.
+
+Additional hardening:
+- **IP allowlist** (`ingress.yaml` lines 21–23): `nginx.ingress.kubernetes.io/whitelist-source-range`
+- **Rate limiting**: 100 req/s via `nginx.ingress.kubernetes.io/rate-limit`
 
 ---
 
@@ -360,7 +389,8 @@ Every build scans the container image for known CVEs **before** pushing to ECR. 
 | `devops/helm/persons-finder/values-prod.yaml` | 47 | Prod overrides: `networkPolicy.enabled: true`, TLS, rate-limit |
 | `devops/helm/persons-finder/templates/rbac.yaml` | 27 | Role (read-only) + RoleBinding + ServiceAccount |
 | `devops/helm/persons-finder/templates/networkpolicy.yaml` | 22 | NetworkPolicy template (Ingress + Egress allowlists) |
-| `devops/helm/persons-finder/templates/ingress.yaml` | 58 | TLS termination, cert-manager, rate-limit, IP allowlist, Basic Auth |
+| `devops/helm/persons-finder/templates/ingress.yaml` | 57 | TLS termination, cert-manager, rate-limit, IP allowlist, Swagger Basic Auth |
+| `devops/helm/persons-finder/templates/basic-auth-secret.yaml` | 12 | Opaque Secret for Ingress Basic Auth (htpasswd, conditional on `swagger.basicAuth.enabled`) |
 | `devops/terraform/modules/secrets-manager/main.tf` | 116 | AWS Secrets Manager + KMS key (rotation, policy, access control) |
 | `devops/kyverno/verify-image-signatures.yaml` | 67 | Kyverno ClusterPolicy: Enforce mode, blocks unsigned images |
 | `.github/workflows/ci-cd.yml` | 282 | Trivy CI gate (lines 110–119), cosign sign+attest (lines 161–183) |

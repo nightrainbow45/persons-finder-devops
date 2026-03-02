@@ -1,4 +1,4 @@
-# AI Firewall: PII Egress Protection Architecture
+# 7. AI Firewall: PII Egress Protection Architecture
 
 > **Design Challenge Answer** — How to prevent real PII from leaving the EKS cluster when the app calls an external LLM provider.
 

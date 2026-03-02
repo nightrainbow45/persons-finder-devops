@@ -1,0 +1,18 @@
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    # Let's Encrypt production server
+    server: https://acme-v02.api.letsencrypt.org/directory
+    # Email for certificate expiration notifications
+    email: admin@digico.cloud
+    # Secret to store ACME account private key
+    privateKeySecretRef:
+      name: letsencrypt-prod
+    # Enable HTTP-01 challenge provider
+    solvers:
+    - http01:
+        ingress:
+          class: nginx

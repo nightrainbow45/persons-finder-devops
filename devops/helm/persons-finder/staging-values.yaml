@@ -1,0 +1,252 @@
+# Staging Configuration for Persons Finder API
+# This file contains configuration for staging/testing environment
+# 
+# Usage:
+#   helm upgrade persons-finder ./devops/helm/persons-finder \
+#     -f devops/helm/persons-finder/staging-values.yaml \
+#     --namespace staging
+
+# ============================================================================
+# Image Configuration
+# ============================================================================
+
+image:
+  repository: 190239490233.dkr.ecr.ap-southeast-2.amazonaws.com/persons-finder
+  pullPolicy: Always  # Always pull latest for staging
+  tag: "latest"
+
+# Replica Configuration
+# Staging can use fewer replicas
+replicaCount: 2
+
+# ============================================================================
+# Swagger/OpenAPI Configuration
+# ============================================================================
+
+swagger:
+  enabled: true
+  title: "Persons Finder API (Staging)"
+  version: "1.0.0"
+  description: "REST API for managing persons and their locations - Staging Environment"
+  
+  # Basic Authentication (optional for staging)
+  # Can be disabled for easier testing
+  basicAuth:
+    enabled: false
+    # If you want to test authentication in staging:
+    # enabled: true
+    # username: admin
+    # password: "$apr1$test..."  # Use a test password
+
+# ============================================================================
+# CORS Configuration
+# ============================================================================
+
+cors:
+  # Allow all origins in staging for easier testing
+  allowedOrigins: "*"
+  
+  # Note: This is acceptable for staging but NEVER use in production
+
+# ============================================================================
+# Ingress Configuration
+# ============================================================================
+
+ingress:
+  enabled: true
+  className: "nginx"
+  
+  annotations:
+    # TLS/HTTPS Configuration (optional for staging)
+    # cert-manager.io/cluster-issuer: "letsencrypt-staging"
+    # nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+  
+  hosts:
+    - host: staging-api.example.com  # Update with actual staging domain
+      paths:
+        - path: /
+          pathType: Prefix
+  
+  # TLS Configuration (optional for staging)
+  tls: []
+  # Uncomment to enable TLS in staging:
+  # tls:
+  #   - secretName: persons-finder-staging-tls
+  #     hosts:
+  #       - staging-api.example.com
+  
+  # No IP whitelist in staging for easier access
+  ipWhitelist: ""
+  
+  certManager:
+    clusterIssuer: "letsencrypt-staging"  # Use staging issuer to avoid rate limits
+
+# ============================================================================
+# Resource Limits (Lower for staging)
+# ============================================================================
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+# ============================================================================
+# Autoscaling Configuration
+# ============================================================================
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+
+# ============================================================================
+# Health Check Configuration
+# ============================================================================
+
+probes:
+  liveness:
+    httpGet:
+      path: /actuator/health
+      port: 8080
+    initialDelaySeconds: 60
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    httpGet:
+      path: /actuator/health
+      port: 8080
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# ============================================================================
+# Security Context
+# ============================================================================
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: false
+
+# ============================================================================
+# Service Configuration
+# ============================================================================
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+# ============================================================================
+# Application Secrets
+# ============================================================================
+
+secrets:
+  create: true
+  # Use test API key for staging
+  # OPENAI_API_KEY: ""
+
+# ============================================================================
+# Network Policy (Optional for staging)
+# ============================================================================
+
+networkPolicy:
+  enabled: false  # Can be disabled in staging for easier debugging
+  # Enable if you want to test NetworkPolicy behavior:
+  # enabled: true
+  # policyTypes:
+  #   - Ingress
+  #   - Egress
+  # ingress:
+  #   - from:
+  #     - namespaceSelector:
+  #         matchLabels:
+  #           name: ingress-nginx
+  # egress:
+  #   - to:
+  #     - namespaceSelector: {}
+  #     ports:
+  #     - protocol: UDP
+  #       port: 53
+  #     - protocol: TCP
+  #       port: 53
+  #   - to:
+  #     - podSelector: {}
+  #   - to:
+  #     - ipBlock:
+  #         cidr: 0.0.0.0/0
+  #         except:
+  #           - 10.0.0.0/8
+  #           - 172.16.0.0/12
+  #           - 192.168.0.0/16
+  #     ports:
+  #     - protocol: TCP
+  #       port: 443
+
+# ============================================================================
+# PII Redaction Sidecar (Optional)
+# ============================================================================
+
+sidecar:
+  enabled: false
+
+# ============================================================================
+# RBAC
+# ============================================================================
+
+rbac:
+  create: true
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# ============================================================================
+# Additional Configuration
+# ============================================================================
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ============================================================================
+# Staging Environment Notes
+# ============================================================================
+#
+# This staging configuration is designed for:
+# - Testing new features before production
+# - Integration testing
+# - Performance testing
+# - Security testing
+#
+# Key differences from production:
+# - CORS allows all origins (*)
+# - Basic authentication disabled by default
+# - Lower resource limits
+# - Fewer replicas
+# - NetworkPolicy disabled for easier debugging
+# - Uses "latest" image tag
+#
+# Before promoting to production:
+# - Test all security features (authentication, CORS, TLS)
+# - Verify resource limits are appropriate
+# - Test autoscaling behavior
+# - Verify NetworkPolicy works correctly
+# - Test with production-like load
+#
+# ============================================================================

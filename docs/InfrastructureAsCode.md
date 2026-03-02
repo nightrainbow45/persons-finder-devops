@@ -1,4 +1,4 @@
-# Requirement 2: Infrastructure as Code (Kubernetes / Terraform)
+# 5. Infrastructure as Code (Kubernetes / Terraform)
 
 > **Requirement:** Deploy this app to a local cluster (Minikube/Kind) or output Terraform for AWS/GCP.
 > - **Secrets:** The app needs an `OPENAI_API_KEY`. Do not bake it into the image. Show how you inject it securely (K8s Secrets, Vault, etc.).

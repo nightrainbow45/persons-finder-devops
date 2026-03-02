@@ -1,85 +1,102 @@
-# Terraform Infrastructure - Persons Finder
+# Terraform Infrastructure — Persons Finder
 
-Terraform configurations for provisioning AWS infrastructure for the Persons Finder application, including VPC, EKS, ECR, IAM, and Secrets Manager.
+Terraform configurations for provisioning AWS infrastructure: VPC, EKS, ECR (with KMS encryption and cosign signing key), IAM (GitHub OIDC + Kyverno IRSA), Secrets Manager, and CloudWatch observability.
 
 ## Prerequisites
 
-- [Terraform](https://www.terraform.io/downloads) >= 1.5.0
-- [AWS CLI](https://aws.amazon.com/cli/) v2, configured with appropriate credentials
-- [kubectl](https://kubernetes.io/docs/tasks/tools/) for Kubernetes cluster management
-- An AWS account with permissions to create the required resources
-- An S3 bucket and DynamoDB table for Terraform state (see Bootstrap section)
+- Terraform >= 1.5.0 (tested with 1.14.6)
+- AWS CLI v2, configured with credentials for account `190239490233`
+- `kubectl` for post-deploy cluster access
+- An S3 bucket and DynamoDB table for remote state (pre-created — see Bootstrap section)
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│                    VPC                          │
-│  ┌──────────────┐    ┌──────────────────────┐   │
-│  │ Public Subnet│    │   Private Subnet      │   │
-│  │  (ALB/NLB)  │    │  ┌─────────────────┐  │   │
-│  │              │    │  │   EKS Cluster    │  │   │
-│  │  Internet GW │    │  │  ┌───────────┐  │  │   │
-│  │              │    │  │  │ Node Group│  │  │   │
-│  └──────────────┘    │  │  └───────────┘  │  │   │
-│         │            │  └─────────────────┘  │   │
-│    NAT Gateway       │                       │   │
-│         │            └──────────────────────┘   │
-└─────────────────────────────────────────────────┘
-         │
-    ┌────┴────┐     ┌──────────────┐
-    │   ECR   │     │   Secrets    │
-    │  Repo   │     │   Manager    │
-    └─────────┘     └──────────────┘
+                           ap-southeast-2
+┌──────────────────────────────────────────────────────────────────┐
+│  VPC (10.1.0.0/16)  ─ 2 AZs                                      │
+│                                                                    │
+│  Public Subnets (10.1.0.x, 10.1.1.x)                             │
+│    └── Internet Gateway → NAT Gateway (single, cost-saving)       │
+│                                                                    │
+│  Private Subnets (10.1.2.x, 10.1.3.x)                            │
+│    └── EKS Managed Node Group                                      │
+│          persons-finder-nodes-prod                                 │
+│          t3.small · SPOT · desired=1 · max=3                       │
+│          VPC CNI (enableNetworkPolicy=true, eBPF enforcement)      │
+│                                                                    │
+│  EKS Control Plane                                                 │
+│    persons-finder-prod · K8s 1.32 · audit logs → CloudWatch       │
+└──────────────────────────────────────────────────────────────────┘
+       │
+       ├── ECR (persons-finder)   IMMUTABLE · KMS-encrypted · scan-on-push
+       ├── ECR (pii-redaction-sidecar)   CI-created · not Terraform-managed
+       ├── Secrets Manager   persons-finder/prod/secrets (KMS, 30-day recovery)
+       ├── KMS (ECR encryption)   alias/persons-finder-ecr-prod · key rotation on
+       ├── KMS (cosign signing)   alias/persons-finder-cosign-prod · ECC_NIST_P256
+       ├── IAM OIDC Provider   GitHub Actions → sts:AssumeRoleWithWebIdentity
+       ├── IAM: kyverno IRSA   persons-finder-kyverno-prod → ECR readonly
+       └── CloudWatch   /eks/persons-finder/pii-audit · 2 metric filters · 1 alarm
 ```
 
 ## Directory Structure
 
 ```
 terraform/
-├── backend.tf              # S3 backend configuration
-├── versions.tf             # Provider version constraints
-├── variables.tf            # Global variable definitions
-├── outputs.tf              # Global outputs
-├── README.md               # This file
+├── backend.tf               # S3 backend (shared across envs)
+├── versions.tf              # Provider version constraints
+├── variables.tf             # Global variable definitions
+├── outputs.tf               # Global outputs
+├── README.md                # This file
 ├── modules/
-│   ├── iam/                # IAM roles, policies, OIDC
-│   ├── vpc/                # VPC, subnets, NAT, security groups
-│   ├── eks/                # EKS cluster, node groups, add-ons
-│   ├── ecr/                # ECR repository, lifecycle policies
-│   └── secrets-manager/    # Secrets with KMS encryption
+│   ├── iam/                 # GitHub OIDC provider, IAM roles + policies
+│   │   ├── main.tf
+│   │   ├── oidc.tf
+│   │   ├── roles.tf
+│   │   ├── variables.tf
+│   │   ├── outputs.tf
+│   │   ├── policies/        # JSON policy documents
+│   │   └── trust-policies/  # JSON trust policy documents
+│   ├── vpc/                 # VPC, subnets, NAT, IGW, route tables, security groups
+│   ├── eks/                 # EKS cluster, node group, addons (vpc-cni, coredns, kube-proxy)
+│   │   └── aws-auth.tf      # aws-auth ConfigMap for RBAC
+│   ├── ecr/                 # ECR repo, KMS keys (ECR + cosign), lifecycle policy
+│   └── secrets-manager/     # AWS Secrets Manager secret, KMS, access policy
 └── environments/
-    ├── dev/                # Development environment
+    ├── dev/                 # Development environment (inactive)
     │   ├── main.tf
     │   └── terraform.tfvars
-    └── prod/               # Production environment
-        ├── main.tf
+    └── prod/                # Production environment (active)
+        ├── main.tf          # Module composition + prod-specific resources
+        ├── cloudwatch.tf    # Layer 4: log group, metric filters, PII leak alarm
         └── terraform.tfvars
 ```
 
-## Bootstrap - State Backend
+**Prod-specific resources** (in `environments/prod/main.tf`, not in modules):
 
-Before deploying any environment, create the S3 bucket and DynamoDB table for Terraform state:
+| Resource | Purpose |
+|---|---|
+| `aws_iam_openid_connect_provider.eks` | OIDC provider — enables IRSA for pods |
+| `aws_iam_role.kyverno` | IRSA role for Kyverno admission controller (ECR readonly) |
+| `aws_iam_role_policy.github_actions_sidecar_ecr` | Allows CI to push `pii-redaction-sidecar` to ECR |
+| `aws_iam_role_policy.github_actions_cosign` | Allows CI to sign images with cosign KMS key |
+
+## Bootstrap — State Backend
+
+The S3 bucket and DynamoDB table are already provisioned. To recreate from scratch:
 
 ```bash
-# Create S3 bucket for state
+# S3 bucket for state
 aws s3api create-bucket \
   --bucket persons-finder-terraform-state \
   --region ap-southeast-2 \
   --create-bucket-configuration LocationConstraint=ap-southeast-2
 
-# Enable versioning
 aws s3api put-bucket-versioning \
   --bucket persons-finder-terraform-state \
   --versioning-configuration Status=Enabled
 
-# Enable encryption
-aws s3api put-bucket-encryption \
-  --bucket persons-finder-terraform-state \
-  --server-side-encryption-configuration \
-  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"aws:kms"}}]}'
-
-# Create DynamoDB table for state locking
+# DynamoDB for state locking
 aws dynamodb create-table \
   --table-name persons-finder-terraform-locks \
   --attribute-definitions AttributeName=LockID,AttributeType=S \
@@ -90,141 +107,128 @@ aws dynamodb create-table \
 
 ## Deployment
 
+### Prod Environment (active)
+
+```bash
+cd devops/terraform/environments/prod
+
+terraform init
+terraform plan
+terraform apply
+```
+
 ### Dev Environment
 
 ```bash
 cd devops/terraform/environments/dev
 
-# Edit terraform.tfvars with your values
-# Required: aws_account_id, github_org
-
-# Initialize Terraform
-terraform init
-
-# Review the plan
-terraform plan
-
-# Apply changes
-terraform apply
-```
-
-### Prod Environment
-
-```bash
-cd devops/terraform/environments/prod
-
-# Edit terraform.tfvars with your values
+# Edit terraform.tfvars if needed (aws_account_id, github_org already set)
 terraform init
 terraform plan
 terraform apply
 ```
 
-### Configure kubectl
-
-After deploying, configure kubectl to access the cluster:
+### Configure kubectl After Apply
 
 ```bash
-# The command is provided as a Terraform output
-aws eks update-kubeconfig \
-  --region ap-southeast-2 \
-  --name persons-finder-dev   # or persons-finder-prod
+# Output value of kubeconfig_command
+aws eks update-kubeconfig --region ap-southeast-2 --name persons-finder-prod
 ```
 
-## Variable Configuration
-
-### Environment-Specific Settings
+## Environment Configuration
 
 | Setting | Dev | Prod |
-|---------|-----|------|
+|---|---|---|
+| K8s version | 1.28 | 1.32 |
 | VPC CIDR | 10.0.0.0/16 | 10.1.0.0/16 |
-| Availability Zones | 2 | 3 |
-| NAT Gateway | Single (cost saving) | Per-AZ (HA) |
-| Node Instance Type | t3.medium | t3.large |
-| Node Capacity | SPOT | ON_DEMAND |
-| Desired Nodes | 2 | 3 |
-| Max Nodes | 3 | 10 |
-| ECR Image Retention | 10 | 50 |
+| Availability Zones | 2 | 2 |
+| NAT Gateway | Single | Single (cost-saving) |
+| Node Instance Type | t3.medium | t3.small |
+| Node Capacity | SPOT | SPOT |
+| Node desired / min / max | 2 / 1 / 3 | 1 / 1 / 3 |
+| Cluster Log Types | api, audit, authenticator | audit |
 | ECR Tag Mutability | MUTABLE | IMMUTABLE |
+| ECR Image Retention (git-*) | 10 | 50 |
 | KMS Deletion Window | 7 days | 30 days |
 | Secret Recovery Window | 7 days | 30 days |
+| Kyverno IRSA | — | ✅ |
+| cosign KMS key | — | ✅ ECC_NIST_P256 |
+| CloudWatch observability | — | ✅ |
 
-### Required Variables
+## Required Variables
 
-| Variable | Description | Example |
-|----------|-------------|---------|
+| Variable | Description | Value |
+|---|---|---|
 | `aws_account_id` | AWS account ID | `190239490233` |
-| `github_org` | GitHub organization/user | `your-org` |
+| `github_org` | GitHub organization/user | `nightrainbow45` |
 | `github_repo` | GitHub repository name | `persons-finder` |
-
-### Optional Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `project_name` | `persons-finder` | Project name prefix |
-| `aws_region` | `ap-southeast-2` | AWS region |
 
 ## Outputs
 
-After applying Terraform, the following outputs are available:
-
 | Output | Description |
-|--------|-------------|
-| `vpc_id` | ID of the created VPC |
-| `eks_cluster_name` | Name of the EKS cluster |
-| `eks_cluster_endpoint` | API endpoint URL for the EKS cluster |
-| `ecr_repository_url` | URL for pushing Docker images |
+|---|---|
+| `vpc_id` | VPC ID |
+| `eks_cluster_name` | EKS cluster name |
+| `eks_cluster_endpoint` | EKS API server endpoint |
+| `ecr_repository_url` | ECR URL for pushing images |
 | `github_actions_role_arn` | IAM role ARN for GitHub Actions OIDC |
-| `kubeconfig_command` | Command to configure kubectl |
-
-Access outputs:
+| `kubeconfig_command` | `aws eks update-kubeconfig` command |
+| `cosign_key_arn` | KMS key ARN for cosign image signing (prod only) |
+| `kyverno_role_arn` | IRSA role ARN for Kyverno admission controller (prod only) |
+| `cloudwatch_log_group` | CloudWatch log group for PII audit logs (prod only) |
+| `cloudwatch_alarm_arn` | ARN of the PII leak risk alarm (prod only) |
 
 ```bash
-terraform output                    # Show all outputs
-terraform output ecr_repository_url # Show specific output
+terraform output                        # all outputs
+terraform output ecr_repository_url     # specific output
 ```
 
 ## Modules
 
 ### IAM Module (`modules/iam/`)
-Creates GitHub OIDC provider, IAM roles (github-actions, eks-admin, eks-developer), and least-privilege policies for ECR push, EKS access, and deployment.
+Creates the GitHub OIDC provider and three IAM roles: `github-actions-role` (OIDC — ECR push + EKS deploy), `eks-admin`, and `eks-developer`. Least-privilege policies are in `policies/` as JSON documents.
 
 ### VPC Module (`modules/vpc/`)
-Creates VPC with public and private subnets across multiple AZs, internet gateway, NAT gateways, route tables, and security groups for EKS cluster and nodes.
+Creates VPC with public and private subnets across `az_count` AZs, internet gateway, NAT gateways (single or per-AZ), route tables, and security groups for EKS cluster and nodes. Both environments use `single_nat_gateway = true` for cost savings.
 
 ### EKS Module (`modules/eks/`)
-Creates EKS cluster with managed node groups, cluster add-ons (VPC CNI, CoreDNS, kube-proxy), IAM roles for nodes, and aws-auth ConfigMap for RBAC mapping.
+Creates EKS cluster, managed node group with a launch template (IMDS hop limit = 2 for IRSA), and three managed add-ons: `vpc-cni` (with `enableNetworkPolicy=true` for eBPF NetworkPolicy enforcement), `coredns`, `kube-proxy`. Also generates the `aws-auth` ConfigMap for RBAC.
 
 ### ECR Module (`modules/ecr/`)
-Creates ECR repository with image scanning on push, lifecycle policies for image retention, and repository access policies for CI/CD and EKS nodes.
+Creates the ECR repository with `scan_on_push`, KMS encryption (`alias/persons-finder-ecr-prod`), a lifecycle policy (untagged→1d, pr-*→7d, git-*→keep last N, semver→forever), and an asymmetric KMS key for cosign image signing (`alias/persons-finder-cosign-prod`, ECC_NIST_P256). Dev uses MUTABLE tags; prod uses IMMUTABLE.
 
 ### Secrets Manager Module (`modules/secrets-manager/`)
-Creates AWS Secrets Manager secrets with KMS encryption, optional rotation policies, and access policies for EKS nodes.
+Creates the `persons-finder/prod/secrets` secret with KMS encryption and an access policy scoped to the EKS node role. The secret value (`OPENAI_API_KEY`) is set manually post-apply via AWS Console or CLI, then synced to Kubernetes by External Secrets Operator.
 
 ## Teardown
 
-To destroy all resources in an environment:
-
 ```bash
-cd devops/terraform/environments/dev  # or prod
+cd devops/terraform/environments/prod  # or dev
 terraform destroy
 ```
 
-**Warning:** This will delete all infrastructure including the EKS cluster and all workloads running on it. Ensure you have backed up any important data before proceeding.
+**Warning:** This deletes the EKS cluster and all workloads. Drain and backup first.
 
 ## Troubleshooting
 
-### Common Issues
+**State lock stuck:**
+```bash
+terraform force-unlock <LOCK_ID>
+```
 
-1. **State lock error**: If a previous apply was interrupted, release the lock:
-   ```bash
-   terraform force-unlock <LOCK_ID>
-   ```
+**`aws-auth` ConfigMap missing a role:**
+```bash
+kubectl get configmap aws-auth -n kube-system -o yaml
+```
 
-2. **EKS node join failure**: Check the aws-auth ConfigMap:
-   ```bash
-   kubectl get configmap aws-auth -n kube-system -o yaml
-   ```
+**ECR push denied from CI:**
+Verify the `github-actions-role` has `ecr-push` policy and the OIDC provider thumbprint matches.
 
-3. **ECR push denied**: Verify the GitHub Actions role has the ecr-push policy attached and OIDC is configured correctly.
+**Kyverno admission latency (>10s):**
+Ensure `kyverno-admission-controller` ServiceAccount is annotated with `eks.amazonaws.com/role-arn: <kyverno_role_arn output>`.
 
-4. **NAT Gateway costs**: Dev uses a single NAT gateway to reduce costs. If private subnet connectivity issues occur, verify the NAT gateway is healthy.
+**Secret not syncing to K8s:**
+Check ESO ClusterSecretStore and ExternalSecret status:
+```bash
+kubectl get clustersecretstore,externalsecret -n default
+```

@@ -60,7 +60,7 @@ The Helm chart is located at `devops/helm/persons-finder/` and packages all Kube
 |-----------|---------|-------------|
 | `replicaCount` | `2` | Number of pod replicas |
 | `image.repository` | `190239490233.dkr.ecr.ap-southeast-2.amazonaws.com/persons-finder` | Container image |
-| `image.tag` | `latest` | Image tag |
+| `image.tag` | `git-<sha>` | Image tag — use exact semver (`1.2.3`) for releases, `git-<sha>` for main branch builds. Never use `latest` in production. |
 | `service.type` | `ClusterIP` | Kubernetes service type |
 | `service.port` | `80` | Service port |
 | `service.targetPort` | `8080` | Container port |
@@ -76,6 +76,9 @@ The Helm chart is located at `devops/helm/persons-finder/` and packages all Kube
 | `sidecar.enabled` | `false` | Enable PII redaction sidecar |
 | `networkPolicy.enabled` | `false` | Enable NetworkPolicy |
 | `secrets.create` | `true` | Create Secret resource |
+| `swagger.enabled` | `true` | Enable Swagger UI and `/v3/api-docs` |
+| `swagger.basicAuth.enabled` | `false` | Enable Ingress-level Basic Auth for Swagger UI |
+| `cors.allowedOrigins` | `*` | CORS allowed origins — set to specific domain in prod |
 
 ### Environment-Specific Values
 
@@ -257,6 +260,46 @@ kubectl port-forward svc/persons-finder 8080:80 -n prod
 curl http://localhost:8080/actuator/health
 ```
 
+### Swagger UI
+
+When Ingress is configured (production):
+
+```bash
+# Access Swagger UI via domain
+open https://aifindy.digico.cloud/swagger-ui/index.html
+
+# With Basic Auth (if swagger.basicAuth.enabled=true)
+curl -u admin:<password> https://aifindy.digico.cloud/swagger-ui/index.html
+
+# OpenAPI JSON spec
+curl https://aifindy.digico.cloud/v3/api-docs | jq .
+```
+
+Without Ingress (local port-forward):
+
+```bash
+kubectl port-forward svc/persons-finder 8080:80 -n default
+open http://localhost:8080/swagger-ui/index.html
+```
+
+To disable Swagger in production:
+
+```bash
+helm upgrade persons-finder ./devops/helm/persons-finder \
+  --set swagger.enabled=false \
+  --namespace default
+```
+
+### TLS Certificate
+
+cert-manager automatically provisions and renews a Let's Encrypt certificate when Ingress TLS is enabled. Check certificate status:
+
+```bash
+kubectl get certificate -n default
+kubectl describe certificate persons-finder-tls -n default
+# Ready: True  →  certificate is valid and current
+```
+
 ### Logs
 
 ```bash
@@ -303,13 +346,22 @@ kubectl get pods -n prod
 To deploy a new image version:
 
 ```bash
+# Release (semver tag) — use exact version
 helm upgrade persons-finder ./devops/helm/persons-finder \
-  -f devops/helm/persons-finder/values-prod.yaml \
-  --set image.tag=<new-tag> \
-  --namespace prod
+  -f devops/helm/persons-finder/production-values.yaml \
+  --set image.tag=1.2.3 \
+  --namespace default
+
+# Main branch build — use git-sha
+helm upgrade persons-finder ./devops/helm/persons-finder \
+  -f devops/helm/persons-finder/production-values.yaml \
+  --set image.tag=git-a1b2c3d \
+  --namespace default
 ```
 
-The rolling update strategy (`maxSurge=1, maxUnavailable=0`) ensures zero-downtime deployments.
+> **Tag strategy:** ECR uses IMMUTABLE tags. Always use `git-<sha>` (main builds) or exact semver `X.Y.Z` (release tags). Never use `latest` — it cannot be overwritten in IMMUTABLE mode and is not traceable. See [RELEASE_PROCESS.md](./RELEASE_PROCESS.md) for the full release workflow.
+
+The rolling update strategy uses `maxSurge=0, maxUnavailable=1` — kills the old pod first, then starts the new one. This is required on t3.small nodes where the 11-pod ENI limit means there's no headroom to start a new pod before terminating the old one (`maxSurge=1` would deadlock).
 
 ## Troubleshooting
 

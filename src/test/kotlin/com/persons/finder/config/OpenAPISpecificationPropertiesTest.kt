@@ -10,6 +10,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 
 /**
@@ -585,7 +586,7 @@ class OpenAPISpecificationPropertiesTest {
                 testOrigins.forEach { origin ->
                     // When: sending an OPTIONS preflight request with Origin header
                     val result = mockMvc.perform(
-                        org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options(endpoint)
+                        options(endpoint)
                             .header("Origin", origin)
                             .header("Access-Control-Request-Method", "POST")
                             .header("Access-Control-Request-Headers", "Content-Type, Authorization")
@@ -636,6 +637,191 @@ class OpenAPISpecificationPropertiesTest {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * **Property 11: Specific Model Examples**
+     *
+     * **Validates: Requirements 7.1, 7.2, 7.3, 7.4**
+     *
+     * For any request or response model defined in the OpenAPI specification, the schema
+     * SHALL include at least one example value that demonstrates the expected data structure.
+     * This property specifically validates that:
+     * - CreatePersonRequest includes example: {"name": "John Doe"}
+     * - UpdateLocationRequest includes example with latitude and longitude
+     * - GET /api/v1/persons includes query parameter example: ids=1,2,3
+     * - GET /api/v1/persons/{id}/nearby includes radius parameter with default value 10
+     *
+     * This test runs 100 iterations to verify all model examples are consistently present
+     * and correctly formatted.
+     */
+    @Test
+    fun `Property 11 - all models include specific example values`() {
+        // Given: OpenAPI specification
+        val spec = getOpenAPISpec()
+        val paths = spec.get("paths")
+        val components = spec.get("components")
+        assertNotNull(paths, "OpenAPI spec should have paths")
+        assertNotNull(components, "OpenAPI spec should have components")
+
+        val schemas = components.get("schemas")
+        assertNotNull(schemas, "Components should have schemas")
+
+        // When/Then: testing model examples multiple times (simulating 100 tries)
+        repeat(100) { iteration ->
+            // Requirement 7.1: Verify CreatePersonRequest has example {"name": "John Doe"}
+            val createPersonRequest = schemas.get("CreatePersonRequest")
+            assertNotNull(createPersonRequest, "Iteration $iteration: CreatePersonRequest schema should exist")
+
+            // Check for example in the schema or in the request body content
+            val postPersonsPath = paths.get("/api/v1/persons")
+            assertNotNull(postPersonsPath, "Iteration $iteration: POST /api/v1/persons path should exist")
+
+            val postOperation = postPersonsPath.get("post")
+            assertNotNull(postOperation, "Iteration $iteration: POST operation should exist")
+
+            val requestBody = postOperation.get("requestBody")
+            assertNotNull(requestBody, "Iteration $iteration: Request body should exist for POST /api/v1/persons")
+
+            val content = requestBody.get("content")
+            assertNotNull(content, "Iteration $iteration: Request body should have content")
+
+            val jsonContent = content.get("application/json")
+            assertNotNull(jsonContent, "Iteration $iteration: Request body should have application/json content")
+
+            // Check for example in the content
+            val hasExample = jsonContent.has("example") || jsonContent.has("examples")
+            assertTrue(hasExample, "Iteration $iteration: CreatePersonRequest should have example in request body")
+
+            if (jsonContent.has("example")) {
+                val example = jsonContent.get("example")
+                assertNotNull(example, "Iteration $iteration: Example should not be null")
+                // Verify the example contains "name" field
+                assertTrue(
+                    example.toString().contains("name", ignoreCase = true),
+                    "Iteration $iteration: CreatePersonRequest example should contain 'name' field"
+                )
+            }
+
+            // Requirement 7.2: Verify UpdateLocationRequest has example with latitude and longitude
+            val updateLocationRequest = schemas.get("UpdateLocationRequest")
+            assertNotNull(updateLocationRequest, "Iteration $iteration: UpdateLocationRequest schema should exist")
+
+            val putLocationPath = paths.get("/api/v1/persons/{id}/location")
+            assertNotNull(putLocationPath, "Iteration $iteration: PUT /api/v1/persons/{id}/location path should exist")
+
+            val putOperation = putLocationPath.get("put")
+            assertNotNull(putOperation, "Iteration $iteration: PUT operation should exist")
+
+            val putRequestBody = putOperation.get("requestBody")
+            assertNotNull(putRequestBody, "Iteration $iteration: Request body should exist for PUT /api/v1/persons/{id}/location")
+
+            val putContent = putRequestBody.get("content")
+            assertNotNull(putContent, "Iteration $iteration: Request body should have content")
+
+            val putJsonContent = putContent.get("application/json")
+            assertNotNull(putJsonContent, "Iteration $iteration: Request body should have application/json content")
+
+            // Check for example in the content
+            val hasPutExample = putJsonContent.has("example") || putJsonContent.has("examples")
+            assertTrue(hasPutExample, "Iteration $iteration: UpdateLocationRequest should have example in request body")
+
+            if (putJsonContent.has("example")) {
+                val example = putJsonContent.get("example")
+                assertNotNull(example, "Iteration $iteration: Example should not be null")
+                // Verify the example contains latitude and longitude fields
+                assertTrue(
+                    example.toString().contains("latitude", ignoreCase = true),
+                    "Iteration $iteration: UpdateLocationRequest example should contain 'latitude' field"
+                )
+                assertTrue(
+                    example.toString().contains("longitude", ignoreCase = true),
+                    "Iteration $iteration: UpdateLocationRequest example should contain 'longitude' field"
+                )
+            }
+
+            // Requirement 7.3: Verify GET /api/v1/persons has query parameter example: ids=1,2,3
+            val getPersonsPath = paths.get("/api/v1/persons")
+            assertNotNull(getPersonsPath, "Iteration $iteration: GET /api/v1/persons path should exist")
+
+            val getOperation = getPersonsPath.get("get")
+            assertNotNull(getOperation, "Iteration $iteration: GET operation should exist")
+
+            val parameters = getOperation.get("parameters")
+            assertNotNull(parameters, "Iteration $iteration: GET /api/v1/persons should have parameters")
+            assertTrue(parameters.isArray, "Iteration $iteration: Parameters should be an array")
+            assertTrue(parameters.size() > 0, "Iteration $iteration: Should have at least one parameter")
+
+            // Find the 'ids' parameter
+            var idsParameter: JsonNode? = null
+            parameters.forEach { param ->
+                if (param.get("name")?.asText() == "ids") {
+                    idsParameter = param
+                }
+            }
+            assertNotNull(idsParameter, "Iteration $iteration: 'ids' parameter should exist")
+
+            // Verify the parameter has an example
+            val hasParamExample = idsParameter!!.has("example") || idsParameter!!.has("examples")
+            assertTrue(hasParamExample, "Iteration $iteration: 'ids' parameter should have an example")
+
+            if (idsParameter!!.has("example")) {
+                val example = idsParameter!!.get("example").asText()
+                assertNotNull(example, "Iteration $iteration: 'ids' parameter example should not be null")
+                // Verify the example contains comma-separated numbers (like "1,2,3")
+                assertTrue(
+                    example.matches(Regex("\\d+(,\\d+)*")),
+                    "Iteration $iteration: 'ids' parameter example should be comma-separated numbers, but was '$example'"
+                )
+            }
+
+            // Requirement 7.4: Verify GET /api/v1/persons/{id}/nearby has radius parameter with default value 10
+            val getNearbyPath = paths.get("/api/v1/persons/{id}/nearby")
+            assertNotNull(getNearbyPath, "Iteration $iteration: GET /api/v1/persons/{id}/nearby path should exist")
+
+            val getNearbyOperation = getNearbyPath.get("get")
+            assertNotNull(getNearbyOperation, "Iteration $iteration: GET operation should exist")
+
+            val nearbyParameters = getNearbyOperation.get("parameters")
+            assertNotNull(nearbyParameters, "Iteration $iteration: GET /api/v1/persons/{id}/nearby should have parameters")
+
+            // Find the 'radius' parameter
+            var radiusParameter: JsonNode? = null
+            nearbyParameters.forEach { param ->
+                if (param.get("name")?.asText() == "radius") {
+                    radiusParameter = param
+                }
+            }
+            assertNotNull(radiusParameter, "Iteration $iteration: 'radius' parameter should exist")
+
+            // Verify the parameter has a schema with default value
+            val radiusSchema = radiusParameter!!.get("schema")
+            assertNotNull(radiusSchema, "Iteration $iteration: 'radius' parameter should have a schema")
+
+            // Check for default value in schema
+            val hasDefault = radiusSchema.has("default")
+            assertTrue(hasDefault, "Iteration $iteration: 'radius' parameter schema should have a default value")
+
+            if (hasDefault) {
+                val defaultValue = radiusSchema.get("default")
+                assertNotNull(defaultValue, "Iteration $iteration: Default value should not be null")
+                // Verify the default value is 10
+                val defaultNum = if (defaultValue.isTextual) {
+                    defaultValue.asText().toDoubleOrNull()
+                } else {
+                    defaultValue.asDouble()
+                }
+                assertEquals(
+                    10.0,
+                    defaultNum,
+                    "Iteration $iteration: 'radius' parameter default value should be 10, but was $defaultNum"
+                )
+            }
+
+            // Additionally verify the radius parameter has an example
+            val hasRadiusExample = radiusParameter!!.has("example") || radiusParameter!!.has("examples") || radiusSchema.has("example")
+            assertTrue(hasRadiusExample, "Iteration $iteration: 'radius' parameter should have an example")
         }
     }
 }

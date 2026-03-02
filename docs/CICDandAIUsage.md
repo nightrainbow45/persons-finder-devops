@@ -1,4 +1,4 @@
-# Requirement 4: CI/CD & AI Usage
+# 8. CI/CD & AI Usage
 
 > **Requirement:** Create a CI pipeline (GitHub Actions preferred). Add a step that runs a security scanner (Trivy/Snyk) OR a mocked "AI Code Reviewer" step that fails the build if the code "looks unsafe".
 
@@ -46,7 +46,7 @@ The requirement is **fully satisfied** — using real Trivy container scanning (
 
 ### 2.1 CI Pipeline: GitHub Actions
 
-**File:** `.github/workflows/ci-cd.yml` (282 lines total)
+**File:** `.github/workflows/ci-cd.yml`
 
 Three-job pipeline triggered on every push to `main`, `develop`, and `v*.*.*` tags, and on every pull request to `main`:
 
@@ -245,7 +245,30 @@ spec:                                        # line 32
       verifyDigest: false
 ```
 
-### 3.4 Periodic Re-scan
+### 3.4 ECR Image Tag Strategy
+
+The `docker/metadata-action` generates two types of tags per image, compatible with ECR **IMMUTABLE** tag policy (no tag can be overwritten):
+
+> `.github/workflows/ci-cd.yml` — `meta` step tags block
+
+```yaml
+tags: |
+  type=ref,event=pr              # PR build   → pr-123
+  type=sha,prefix=git-           # All events  → git-a1b2c3d  (traceability)
+  type=semver,pattern={{version}} # Version tag → 1.2.3        (release mgmt)
+```
+
+| Trigger | Tags created | Helm deploy uses |
+|---|---|---|
+| `git push origin vX.Y.Z` | `X.Y.Z` + `git-<sha>` | `X.Y.Z` |
+| push to `main` | `git-<sha>` | `git-<sha>` |
+| Pull Request | `pr-N` + `git-<sha>` | not deployed |
+
+**Why no floating tags (`latest`, `1`, `1.2`):** floating tags must overwrite existing tags — incompatible with ECR IMMUTABLE. Helm deploy uses only unique, immutable tags (exact semver or git-sha), so floating tags provide no deployment value and introduce supply-chain risk.
+
+---
+
+### 3.5 Periodic Re-scan
 
 Runs every Monday at 02:00 UTC, scanning the 5 most recent `git-*` tagged images against the latest CVE database — catching newly disclosed vulnerabilities in already-deployed images.
 
@@ -324,7 +347,7 @@ Total: 0 (CRITICAL: 0, HIGH: 0)
 
 | File | Lines | Purpose |
 |---|---|---|
-| `.github/workflows/ci-cd.yml` | 282 | Main pipeline: build → scan → sign → deploy |
+| `.github/workflows/ci-cd.yml` | — | Main pipeline: build → scan → sign → deploy (ECR tags: git-sha + semver, IMMUTABLE) |
 | `.github/workflows/security-rescan.yml` | 121 | Weekly re-scan of deployed images |
 | `.trivyignore` | 55 | Documented CVE suppressions with removal conditions |
 | `devops/kyverno/verify-image-signatures.yaml` | 67 | Runtime enforcement: block unsigned images |

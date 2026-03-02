@@ -1,4 +1,4 @@
-# Requirement: Containerization & Dockerfile
+# 4. Containerization & Dockerfile
 
 > **Requirement:** Create a `Dockerfile` for the application. Ask an AI to write it. Audit the result — the AI likely missed best practices (non-root user, multi-stage build, pinning versions). Fix them. Output: an optimized `Dockerfile`.
 

@@ -1,4 +1,4 @@
-# Requirement 1: Application Design & API
+# 3. Application Design & API
 
 > **Requirement:** Build a RESTful API service (Spring Boot preferred). Implement at least 3 endpoints. Use proper HTTP status codes. Bonus: OpenAPI/Swagger documentation.
 
@@ -14,7 +14,7 @@
 | At least 3 endpoints | ✅ 4 endpoints: POST, PUT, GET (nearby), GET (by IDs) |
 | Proper HTTP status codes | ✅ 201 Created, 200 OK, 400 Bad Request, 404 Not Found |
 | 3-layer architecture | ✅ `presentation/` → `domain/services/` → `data/` |
-| OpenAPI/Swagger (bonus) | ✅ springdoc-openapi, live Swagger UI, env-switchable |
+| OpenAPI/Swagger (bonus) | ✅ springdoc-openapi, live Swagger UI, env-switchable, Basic Auth (prod), 6 integration test classes |
 
 **Code Snippet Source Map**
 
@@ -287,6 +287,39 @@ fun customOpenAPI(): OpenAPI {
 
 Every endpoint is annotated with `@Operation`, `@ApiResponses`, `@ApiResponse`, `@Schema`, and `@ExampleObject` — producing a fully documented interactive spec. In production, `SWAGGER_ENABLED=false` disables both the UI and the JSON spec endpoint without a code change.
 
+**Production Swagger Basic Auth** — protected at the NGINX Ingress level via `basic-auth-secret.yaml`:
+
+```yaml
+# ingress.yaml (conditional)
+nginx.ingress.kubernetes.io/auth-type: basic
+nginx.ingress.kubernetes.io/auth-secret: persons-finder-basic-auth
+nginx.ingress.kubernetes.io/auth-realm: "Authentication Required"
+```
+
+Enabled when `swagger.basicAuth.enabled: true` in `values.yaml`. The htpasswd-format secret is rendered by `basic-auth-secret.yaml` and base64-encoded at deploy time.
+
+**CORS Configuration** — `CorsConfig.kt`:
+
+```kotlin
+cors.allowed-origins=*                      # default (dev)
+CORS_ALLOWED_ORIGINS=https://your-domain    # prod: enables allowCredentials, disables wildcard
+```
+
+Separate CORS rules apply to `/api/**` and `/v3/api-docs/**`. Setting a specific origin automatically switches `allowCredentials` to `true` and removes the `*` wildcard.
+
+**Integration Test Suite** — `src/test/kotlin/com/persons/finder/config/` (6 classes, `@SpringBootTest`):
+
+| Test Class | Coverage |
+|---|---|
+| `OpenAPISpecificationTest` | `/v3/api-docs` returns all paths and schemas |
+| `OpenAPISpecificationPropertiesTest` | 8 property-based tests × 100+ iterations: spec completeness, param docs, request bodies, CORS headers, Swagger UI, health check isolation |
+| `CorsConfigurationTest` | CORS header correctness per origin |
+| `SwaggerUIAccessibilityTest` | `/swagger-ui/index.html` HTTP 200 |
+| `ModelExamplesTest` | Response model example objects |
+| `HealthCheckIsolationTest` | `/actuator/health` excluded from Swagger spec |
+
+> **Kotlin Gotcha:** KDoc comments must not contain `/**` as a substring (e.g. `/api/v1/**`) — Kotlin treats it as a nested comment opener causing "Unclosed comment" compile errors.
+
 ---
 
 ### 2.10 Service Interfaces (Dependency Inversion)
@@ -320,7 +353,8 @@ The controller depends on interfaces, not concrete implementations. Spring injec
 
 | Additional Feature | Description |
 |---|---|
-| CORS configuration | `CorsConfig.kt` — configurable via `CORS_ALLOWED_ORIGINS` env var; separate rules for `/api/**` and `/v3/api-docs/**` |
+| CORS configuration | `CorsConfig.kt` — `CORS_ALLOWED_ORIGINS` env var; wildcard (dev) → specific origin + `allowCredentials` (prod) |
+| Swagger Basic Auth (prod) | `basic-auth-secret.yaml` + Ingress `auth-type: basic` — protects `/swagger-ui` and `/v3/api-docs` |
 | Actuator health probes | `application.properties` lines 10–14 — `/actuator/health` with liveness/readiness states for K8s probes |
 | Composite DB index | `Location.kt` line 14 — `(latitude, longitude)` index for spatial query performance |
 | Input validation | Coordinate range checks (lat −90..90, lon −180..180) + blank name rejection |

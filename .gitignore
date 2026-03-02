@@ -130,4 +130,6 @@ checkpoint-*.md
 test-summary-*.md
 test-results/
 verify-*.sh
+!devops/scripts/verify-helm-templates.sh
 tfplan-*
+**/tfplan

@@ -86,13 +86,26 @@ kubectl create secret generic persons-finder-secrets \
 ### Step 3: Deploy
 
 ```bash
-./devops/scripts/deploy.sh dev --tag latest
+# Use a git-sha tag from ECR (main branch builds) or semver (release tags)
+# Never use `latest` — ECR is IMMUTABLE and latest is not traceable
+./devops/scripts/deploy.sh dev --tag git-$(git rev-parse --short HEAD)
 ```
 
 ### Step 4: Verify
 
 ```bash
 ./devops/scripts/verify.sh dev
+```
+
+### Step 5: Access Swagger UI
+
+```bash
+# Local port-forward (no Ingress needed)
+kubectl port-forward svc/persons-finder 8080:80 -n default &
+open http://localhost:8080/swagger-ui/index.html
+
+# OpenAPI spec
+curl http://localhost:8080/v3/api-docs | jq .
 ```
 
 ### Tear Down
@@ -178,6 +191,9 @@ terraform -chdir=devops/terraform/environments/dev force-unlock <LOCK_ID>
 ## What's Next?
 
 - Full deployment guide: [DEPLOYMENT.md](./DEPLOYMENT.md)
-- Terraform infrastructure details: [devops/terraform/README.md](../terraform/README.md)
-- CI/CD pipeline: [devops/ci/ci-cd.yml](../ci/ci-cd.yml)
-- Helm chart docs: [devops/helm/persons-finder/README.md](../helm/persons-finder/README.md)
+- Release & tag strategy: [RELEASE_PROCESS.md](./RELEASE_PROCESS.md)
+- DNS and domain setup: [DNS_CONFIGURATION.md](./DNS_CONFIGURATION.md)
+- Swagger troubleshooting: [SWAGGER_TROUBLESHOOTING.md](./SWAGGER_TROUBLESHOOTING.md)
+- Security review: [SECURITY_REVIEW.md](./SECURITY_REVIEW.md)
+- Helm deployment details: [HELM_DEPLOYMENT.md](./HELM_DEPLOYMENT.md)
+- Network security verification: [NETWORK_SECURITY_VERIFICATION.md](./NETWORK_SECURITY_VERIFICATION.md)

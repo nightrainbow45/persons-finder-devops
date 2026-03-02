@@ -1,662 +1,487 @@
-# AI Usage Log / AI使用日志
+# AI War Stories — Persons Finder DevOps
 
-This document records all AI-assisted work performed during the DevOps production deployment implementation for the Persons Finder application. For each artifact, the original prompt/intent, generated output, identified issues, and applied fixes are documented.
+> Plain-language account of what AI helped with, where it screwed up, and how we fixed it.
+> Every item in the checklist and every chapter below is a real mistake from this project. Not padding.
 
 ---
 
-## AI-Generated DevOps Code — Pre-Commit Review Checklist
+## Pre-Commit Sanity Checklist
 
-> Use this checklist to audit any AI-generated DevOps artifact before committing.
-> Every item below corresponds to a real flaw found in this project (see the numbered sections for details).
+### Container
 
-### Containerization
-
-- [ ] Base image versions are fully pinned — no `:latest`, no floating minor tags (e.g. `gradle:7.6.4-jdk11-focal`, not `gradle:7.6-jdk11`)
-- [ ] Multi-stage build: build stage uses full SDK; runtime stage uses minimal JRE/distroless/alpine
-- [ ] Non-root user created and set with `USER` instruction before `ENTRYPOINT`
+- [ ] Pin image versions to patch level — no `:latest`, no floating minor tags (e.g. `gradle:7.6.4-jdk11-focal`, not `gradle:7.6-jdk11`)
+- [ ] Multi-stage build: fat SDK to build, lean JRE/alpine to run
+- [ ] Non-root user created and set with `USER` before `ENTRYPOINT`
 - [ ] `.dockerignore` present and excludes `.git/`, `build/`, `src/test/`, Terraform state, secrets
-- [ ] Alpine runtime stage runs `apk update && apk upgrade --no-cache` to patch OS-level CVEs
-- [ ] `HEALTHCHECK` instruction present and points to the application health endpoint
+- [ ] Alpine runtime stage runs `apk upgrade --no-cache` or OS-level CVEs pile up
+- [ ] `HEALTHCHECK` points to `/actuator/health`
 
-### Kubernetes Manifests (Helm)
+### Kubernetes
 
-- [ ] HPA uses `autoscaling/v2`, not deprecated `v2beta2` or `v2beta1`
-- [ ] Both `readinessProbe` and `livenessProbe` defined on every container (including sidecars)
-- [ ] `resources.requests` and `resources.limits` set on every container
-- [ ] Ingress `pathType` field present (`Prefix` or `Exact`) — required in `networking.k8s.io/v1`
-- [ ] Rolling update `maxSurge` sized against actual node pod capacity — on single small nodes use `maxSurge: 0, maxUnavailable: 1` to avoid scheduling deadlock
-- [ ] `podSecurityContext`: `runAsNonRoot: true`, `allowPrivilegeEscalation: false`, `capabilities: drop: [ALL]`
-- [ ] Sidecar proxy `env` direction verified — outbound forward proxy uses `LISTEN_PORT` + `UPSTREAM_URL`, not `TARGET_HOST` + `TARGET_PORT`
-- [ ] Proxy URL env variable (`LLM_PROXY_URL`) injected into the **main** container when sidecar is enabled
+- [ ] HPA must use `autoscaling/v2`, not `v2beta2`
+- [ ] Every container needs both `readinessProbe` and `livenessProbe`, including sidecars
+- [ ] Both `resources.requests` and `resources.limits` are required
+- [ ] Ingress needs `pathType: Prefix` or `Exact`
+- [ ] Separate app nodes (SPOT) from system node (ON_DEMAND); but Kyverno/cert-manager without `nodeSelector` will drift to SPOT nodes — a SPOT interruption takes down the admission webhook
+- [ ] Spread SPOT app nodes across AZs — current setup has both in `ap-southeast-2b`; a single AZ failure loses all replicas simultaneously
+- [ ] `podSecurityContext`: `runAsNonRoot: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`
+- [ ] Sidecar is an outbound forward proxy — use `LISTEN_PORT` + `UPSTREAM_URL`, not `TARGET_HOST` + `TARGET_PORT`
+- [ ] When sidecar is enabled, inject `LLM_PROXY_URL` into the main container
 
 ### NetworkPolicy
 
-- [ ] DNS egress allows both `UDP 53` **and** `TCP 53` (large DNS responses fall back to TCP)
-- [ ] Internal pod egress rule present (`podSelector: {}`) so same-namespace containers can communicate
-- [ ] External HTTPS egress uses `ipBlock` with RFC1918 ranges excluded, not an open `0.0.0.0/0`
-- [ ] `enableNetworkPolicy: "true"` set on the VPC CNI addon — without this, NetworkPolicy objects exist but are never enforced
+- [ ] Allow both `UDP 53` and `TCP 53` — TCP fallback exists for large DNS responses
+- [ ] Same-namespace pod communication needs an explicit `podSelector: {}` egress rule
+- [ ] Use `ipBlock` excluding RFC1918 ranges for external HTTPS — not open `0.0.0.0/0`
+- [ ] VPC CNI addon needs `enableNetworkPolicy: "true"` or policies do nothing
 
-### CI/CD (GitHub Actions)
+### CI/CD
 
-- [ ] Trivy scan step includes `--exit-code 1` — omitting it means HIGH/CRITICAL CVEs never fail the build
-- [ ] OIDC authentication job has `permissions: { id-token: write, contents: read }`
-- [ ] OIDC trust policy uses `StringLike` (not `StringEquals`) and covers all relevant repositories (e.g. both `app` and `app-devops` repos)
-- [ ] Tool versions pinned (e.g. `trivy v0.69.1` via direct install, not `@master` action tag)
-- [ ] `cosign sign` and `cosign attest` include `--yes` flag for non-interactive CI execution
-- [ ] SBOM `upload-artifact` step sets `retention-days: 90` (default is 0 — artifact deleted immediately)
-- [ ] Periodic re-scan workflow filters to specific tag prefix (e.g. `git-*`) to avoid scanning all images
+- [ ] Trivy needs `--exit-code 1` or CVEs silently pass without failing the build
+- [ ] OIDC job needs `permissions: { id-token: write, contents: read }`
+- [ ] OIDC trust policy needs `StringLike` and must cover both repos
+- [ ] Pin tool versions — don't use `@master`
+- [ ] Both `cosign sign` and `cosign attest` need `--yes` or CI hangs waiting for terminal input
+- [ ] SBOM artifact upload needs `retention-days: 90` — default is instant delete
+- [ ] Periodic re-scan must filter to `git-*` tags only — don't scan everything
+- [ ] With ECR IMMUTABLE, no floating tags (`latest`, `X.Y`, `X`) — use `git-<sha>` + exact semver only
+- [ ] AI-generated docs must be verified against the actual directory listing, real default values, and CLI commands — these three drift fastest
 
-### Terraform / Infrastructure
+### Swagger / OpenAPI
 
-- [ ] S3 backend bucket and DynamoDB lock table documented as bootstrap prerequisites before `terraform init`
-- [ ] EKS `aws-auth` group mappings **always paired** with a `kubernetes_cluster_role` + `kubernetes_cluster_role_binding` — identity without RBAC grants zero permissions
-- [ ] ClusterRole for Helm deployer includes `secrets` CRUD (Helm stores release state as K8s Secrets)
-- [ ] EKS Launch Template sets `http_put_response_hop_limit = 2` so pods can reach EC2 IMDS (ESO, IRSA)
-- [ ] After `terraform destroy + apply`, KMS asymmetric keys get new ARNs and new public keys — Kyverno policy and CI workflow must be updated before deploying, or Enforce mode blocks all pods
-- [ ] Infrastructure idempotency tested with at least one full `destroy + apply` cycle, not just incremental applies
+- [ ] Kotlin KDoc must not contain `/**` as a substring (e.g. in path patterns) — treated as a nested comment opener, causes "Unclosed comment" compile error
+- [ ] Swagger Basic Auth belongs on the Ingress (nginx annotation), not the app layer — no code change needed
+- [ ] Setting a specific `CORS_ALLOWED_ORIGINS` auto-enables `allowCredentials`; wildcard `*` must then be removed — they cannot coexist
 
-### Kyverno / Admission
+### Terraform
 
-- [ ] IRSA configured for `kyverno-admission-controller` ServiceAccount **before** switching to `Enforce` mode — without IRSA, ECR API calls take ~11s, exceeding the 10s webhook timeout and blocking deployments even in Audit mode
-- [ ] `mutateDigest: false` for ECR repositories with IMMUTABLE tags (rewriting tag refs to digest adds noise, no security benefit)
-- [ ] `verifyDigest: false` for ECR IMMUTABLE tags (tag references are as trustworthy as digest references)
-- [ ] Both the main image **and** all sidecar images listed in `imageReferences` — a missing sidecar is a bypass vector
-- [ ] Audit → Enforce promotion checklist documented in the policy file header
+- [ ] S3 bucket and DynamoDB table must exist before `terraform init`
+- [ ] `aws-auth` group mapping requires a matching `ClusterRole` + `ClusterRoleBinding` — identity without binding equals zero permissions
+- [ ] Helm deployer ClusterRole needs `secrets` CRUD — Helm stores release state in Secrets
+- [ ] Launch Template needs `http_put_response_hop_limit = 2` for pods to reach IMDS
+- [ ] After `terraform destroy + apply`, KMS key changes — update Kyverno policy and CI ARN before deploying
+- [ ] Do a full `destroy + apply` to test idempotency — incremental `apply` hides bugs
 
-### Supply Chain & Secrets
+### Kyverno
 
-- [ ] `.trivyignore` entries include: CVE ID, severity, affected component, exploit condition, and explicit removal condition
-- [ ] `cosign sign` uses image digest reference (not tag) to avoid `MANIFEST_UNKNOWN` race condition after `docker push`
-- [ ] KMS ARN for cosign is not stored as a GitHub secret if the PAT lacks `secrets: write` scope — use a workflow `env` variable instead (KMS ARNs are not sensitive)
-- [ ] `OPENAI_API_KEY` (and all secrets) injected via `envFrom.secretRef` — never baked into image or Helm values
+- [ ] Configure IRSA before enabling Enforce mode — without it, ECR API takes ~11s, webhook timeout is 10s, instant admission failure
+- [ ] Set `mutateDigest: false` for ECR IMMUTABLE tags — rewriting to digest is noise
+- [ ] Same for `verifyDigest: false`
+- [ ] Both main and sidecar images must be in `imageReferences` — one unguarded image is a bypass vector
+- [ ] Document the Audit → Enforce prerequisite checklist in the policy file header
 
----
+### Secrets & Supply Chain
 
-## Table of Contents
-
-1. [Dockerfile (Multi-Stage Build)](#1-dockerfile-multi-stage-build)
-2. [Kubernetes Manifests (Helm Chart Templates)](#2-kubernetes-manifests-helm-chart-templates)
-3. [CI/CD Workflow (GitHub Actions)](#3-cicd-workflow-github-actions)
-4. [PII Redaction Sidecar](#4-pii-redaction-sidecar)
-5. [Terraform Configurations](#5-terraform-configurations)
-6. [Application API Endpoints](#6-application-api-endpoints)
-7. [Spring Boot Actuator Configuration](#7-spring-boot-actuator-configuration)
-8. [Go PII Redaction Sidecar](#8-go-pii-redaction-sidecar)
-9. [Kyverno Image Signature Enforcement](#9-kyverno-image-signature-enforcement)
-10. [Layer 3 NetworkPolicy (VPC CNI eBPF)](#10-layer-3-networkpolicy-vpc-cni-ebpf)
-11. [Layer 4 Fluent Bit DaemonSet + CloudWatch](#11-layer-4-fluent-bit-daemonset--cloudwatch)
-12. [Supply Chain Security (cosign + SBOM + Periodic Re-scan)](#12-supply-chain-security-cosign--sbom--periodic-re-scan)
-13. [GitHub Actions OIDC Multi-Repository Trust Policy](#13-github-actions-oidc-multi-repository-trust-policy)
-14. [EKS Node Pod Capacity and Rolling Update Deadlock](#14-eks-node-pod-capacity-and-rolling-update-deadlock)
-15. [Kyverno Admission Webhook Latency and IRSA Chain](#15-kyverno-admission-webhook-latency-and-irsa-chain)
-16. [Deployer RBAC Latent Gap Exposed on Fresh Cluster Rebuild](#16-deployer-rbac-latent-gap-exposed-on-fresh-cluster-rebuild)
-17. [KMS Cosign Key Lifecycle After Terraform Destroy](#17-kms-cosign-key-lifecycle-after-terraform-destroy)
-18. [Go Sidecar Outbound Proxy Direction Architecture](#18-go-sidecar-outbound-proxy-direction-architecture)
+- [ ] Each `.trivyignore` entry needs rationale, affected component, and a removal condition
+- [ ] Use digest reference for `cosign sign`, not tag — avoids `MANIFEST_UNKNOWN` race during ECR propagation
+- [ ] KMS ARN is not sensitive — put it in workflow env vars, not GitHub Secrets
+- [ ] All secrets via `envFrom.secretRef` — never bake into image or Helm values
 
 ---
 
-## 1. Dockerfile (Multi-Stage Build)
+## The Stories
+
+---
+
+### 1. Dockerfile — Multi-Stage Build
 
 **File:** `devops/docker/Dockerfile`
 
-### Original Prompt / Intent
+---
 
-Create a multi-stage Docker build for the Persons Finder Spring Boot application (Kotlin 1.6.21, Spring Boot 2.7.0, JDK 11). The container should use a minimal runtime image, run as a non-root user, pin all base image versions, expose port 8080, and include a health check instruction.
+Asked AI for a Dockerfile, got something that works but had a few gremlins.
 
-### What Was Generated
+First, `COPY *.jar app.jar` blows up if Gradle outputs both a plain jar and a fat jar — two files get copied. Second, `.dockerignore` was placed in the wrong directory relative to the build context. Third, `RUN gradle dependencies || true` swallows real errors, so you'd never know if dependency resolution silently failed.
 
-A two-stage Dockerfile:
-- **Build stage:** Uses `gradle:7.6-jdk11` to compile the application and produce an executable JAR.
-- **Runtime stage:** Uses `eclipse-temurin:11-jre-alpine` as a minimal JRE base image. Creates a non-root user (`appuser`), copies the JAR, exposes port 8080, and adds a `HEALTHCHECK` instruction using `wget` against `/actuator/health`.
-
-### Identified Flaws / Issues
-
-1. **Wildcard JAR copy:** `COPY --from=builder /app/build/libs/*.jar app.jar` may copy multiple JARs if the build produces more than one artifact (e.g., a plain JAR alongside the fat JAR). This could cause unpredictable behavior.
-2. **No `.dockerignore` in root context:** The `.dockerignore` is placed in `devops/docker/` but Docker builds from the project root need a root-level `.dockerignore` or explicit build context configuration.
-3. **Dependency caching layer:** The `RUN gradle dependencies` step uses `|| true` to suppress failures, which masks real dependency resolution errors.
-
-### Fixes Applied
-
-1. Documented the wildcard JAR copy risk in the Dockerfile comments; the Spring Boot Gradle plugin is configured to produce a single bootJar, mitigating the issue in practice.
-2. Created `devops/docker/.dockerignore` with appropriate exclusions; deployment scripts reference the correct build context.
-3. Kept the `|| true` pattern as it is a common Gradle Docker caching strategy, but added a comment explaining the trade-off.
+Fix: Spring Boot only produces one bootJar by default so `*.jar` is fine in practice — added a comment explaining why. Fixed `.dockerignore` path. Kept the `|| true` but added a comment saying "this is a Gradle caching pattern, not error suppression."
 
 ---
 
-## 2. Kubernetes Manifests (Helm Chart Templates)
+### 2. Helm Chart — Kubernetes Manifests
 
-**Directory:** `devops/helm/persons-finder/`
-
-### Original Prompt / Intent
-
-Create a complete Helm Chart for deploying the Persons Finder application to Kubernetes. Include templates for: Deployment (with health probes, resource limits, rolling updates), Service (ClusterIP), Ingress (conditional), HPA (CPU-based autoscaling, 2-10 replicas), Secret (OPENAI_API_KEY), RBAC (minimal permissions), NetworkPolicy (default deny with selective allow), ServiceAccount (with IRSA annotations), and ImagePullSecret (ECR authentication). All values should be parameterized via `values.yaml` with environment-specific overrides (`values-dev.yaml`, `values-prod.yaml`).
-
-### What Was Generated
-
-A full Helm Chart with the following templates:
-- `templates/deployment.yaml` — Deployment with readiness/liveness probes, resource requests/limits, rolling update strategy, Secret-based env injection, optional PII sidecar container, and non-root security context.
-- `templates/service.yaml` — ClusterIP Service with parameterized type and port mapping (80 → 8080).
-- `templates/ingress.yaml` — Conditional Ingress with host/path/TLS parameterization.
-- `templates/hpa.yaml` — Conditional HPA targeting CPU utilization at 70%, min 2 / max 10 replicas, with stabilization windows.
-- `templates/secret.yaml` — Opaque Secret for OPENAI_API_KEY with conditional creation.
-- `templates/rbac.yaml` — Role and RoleBinding with minimal read permissions on ConfigMaps and Secrets.
-- `templates/networkpolicy.yaml` — Default deny with selective ingress (from Ingress controller) and egress (DNS, LLM endpoints).
-- `templates/serviceaccount.yaml` — ServiceAccount with optional IRSA annotation for AWS IAM role association.
-- `templates/imagepullsecret.yaml` — Docker registry Secret for ECR authentication.
-- `templates/_helpers.tpl` — Template helper functions for labels, selectors, and naming.
-- `Chart.yaml`, `values.yaml`, `values-dev.yaml`, `values-prod.yaml` — Chart metadata and parameterized configuration.
-
-### Identified Flaws / Issues
-
-1. **HPA API version:** Initial generation used `autoscaling/v2beta2` which is deprecated in Kubernetes 1.26+. Needed to use `autoscaling/v2` for forward compatibility.
-2. **NetworkPolicy egress CIDR:** The egress rules used a broad `0.0.0.0/0` CIDR for LLM provider access. This is overly permissive and should be narrowed to specific provider IP ranges in production.
-3. **Ingress `pathType`:** The initial template omitted the `pathType` field, which is required in `networking.k8s.io/v1` Ingress resources.
-4. **Secret base64 encoding:** The Secret template used `{{ .Values.secrets.openaiApiKey | b64enc }}` which double-encodes if the value is already base64-encoded in values.yaml.
-5. **RBAC scope:** Initial RBAC granted `list` and `watch` on Secrets at namespace level, which is broader than needed for a single application secret.
-
-### Fixes Applied
-
-1. Updated HPA template to use `autoscaling/v2` API version.
-2. Added comments in `values.yaml` documenting that egress CIDRs should be restricted to specific LLM provider ranges in production deployments.
-3. Added `pathType: Prefix` to the Ingress template path specification.
-4. Changed Secret template to accept plain-text values and apply `b64enc` once, with clear documentation in values.yaml.
-5. Narrowed RBAC to `get` permission on specific named resources rather than namespace-wide `list`/`watch`.
+**Dir:** `devops/helm/persons-finder/`
 
 ---
 
-## 3. CI/CD Workflow (GitHub Actions)
+Asked AI for a full Helm chart, got a dozen templates, five needed fixing.
 
-**File:** `devops/ci/ci-cd.yml` (copied to `.github/workflows/ci-cd.yml`)
-
-### Original Prompt / Intent
-
-Create a GitHub Actions CI/CD workflow that: builds the application with Gradle, runs unit tests, builds a Docker image, scans it with Trivy for security vulnerabilities (failing on HIGH/CRITICAL), authenticates to AWS using OIDC (no long-lived credentials), pushes the image to Amazon ECR, and supports deployment triggers on push to `main`.
-
-### What Was Generated
-
-A multi-job GitHub Actions workflow:
-- **build-and-test:** Checks out code, sets up JDK 11 with Gradle caching, builds the application, runs tests, and uploads test results as artifacts.
-- **docker-build-and-scan:** Builds the Docker image using `devops/docker/Dockerfile`, runs Trivy vulnerability scanner with `CRITICAL,HIGH` severity filter, and uploads the scan report.
-- **push-to-ecr:** Authenticates to AWS via OIDC using `aws-actions/configure-aws-credentials`, logs into ECR, and pushes the image tagged with commit SHA and `latest`.
-
-### Identified Flaws / Issues
-
-1. **OIDC role ARN hardcoded:** The initial workflow contained a placeholder `arn:aws:iam::role/` that would fail at runtime. The ARN must be provided via GitHub repository secrets.
-2. **Trivy exit code handling:** The initial configuration did not set `exit-code: '1'` for the Trivy action, meaning HIGH/CRITICAL vulnerabilities would not actually fail the build.
-3. **Missing `permissions` block:** OIDC authentication requires `id-token: write` and `contents: read` permissions on the job, which were initially omitted.
-4. **Gradle wrapper validation:** The workflow did not validate the Gradle wrapper checksum, which is a supply-chain security best practice.
-5. **Docker layer caching:** No build cache was configured, leading to slower builds on repeated runs.
-
-### Fixes Applied
-
-1. Changed the OIDC role ARN to reference `${{ secrets.AWS_ROLE_ARN }}` from GitHub repository secrets.
-2. Added `exit-code: '1'` and `severity: 'CRITICAL,HIGH'` to the Trivy scanner step.
-3. Added `permissions: { id-token: write, contents: read }` to the relevant jobs.
-4. Added Gradle wrapper validation step using `gradle/wrapper-validation-action`.
-5. Configured Docker Buildx with GitHub Actions cache (`type=gha`) for layer caching.
+1. HPA was on `autoscaling/v2beta2` — deprecated since K8s 1.26. Updated to `v2`.
+2. NetworkPolicy egress was wide-open `0.0.0.0/0` — basically no policy. Switched to `ipBlock` excluding RFC1918 ranges.
+3. Ingress was missing `pathType` — required field in `networking.k8s.io/v1`, would fail on apply.
+4. Secret template double-encoded values — plain text from `values.yaml` got `b64enc`'d again. Fixed to encode once.
+5. RBAC was giving namespace-wide `list`/`watch` on Secrets. Narrowed to `get` on specific named resources.
 
 ---
 
-## 4. PII Redaction Sidecar
+### 3. CI/CD — GitHub Actions Pipeline
 
-**Directory:** `src/main/kotlin/com/persons/finder/pii/`
-
-### Original Prompt / Intent
-
-Implement a PII (Personally Identifiable Information) redaction sidecar service in Kotlin that: intercepts outbound requests to external LLM providers, detects PII using regex patterns (person names, geographic coordinates), redacts/tokenizes sensitive data with reversible mapping, maintains JSON-formatted audit logs of all external API calls, and supports configurable redaction rules.
-
-### What Was Generated
-
-Six Kotlin source files:
-- **`PiiDetector.kt`** — Detects PII using configurable regex patterns. Supports `NAME` and `COORDINATE` PII types. Returns matches sorted by descending start index for safe in-place replacement.
-- **`PiiRedactor.kt`** — Redacts detected PII by replacing matches with UUID-based tokens. Produces a `RedactionResult` containing the redacted text, a reversible token map, and detected PII types. Supports de-tokenization to restore original values.
-- **`PiiProxyService.kt`** — HTTP proxy service that intercepts outbound LLM requests, applies PII redaction, forwards sanitized requests, de-tokenizes responses, and logs all operations via the audit logger.
-- **`AuditLogger.kt`** — Writes structured JSON audit log entries to stdout. Each entry includes timestamp, request ID, destination URL, detected PII types, redaction count, and request status.
-- **`AuditLogEntry.kt`** — Data class defining the audit log schema with fields for timestamp, requestId, destination, piiDetected, redactionsApplied, and status.
-- **`RedactionConfig.kt`** — Configuration data classes for redaction rules, PII types, and pattern definitions. Provides sensible defaults for name and coordinate detection.
-
-### Identified Flaws / Issues
-
-1. **Name regex over-matching:** The initial name pattern `[A-Z][a-z]+ [A-Z][a-z]+` matches any two capitalized words, producing false positives on non-name text (e.g., "Spring Boot", "New York").
-2. **Coordinate regex precision:** The coordinate pattern matched integers as coordinates, leading to false positives on port numbers, IDs, and other numeric values.
-3. **Token collision risk:** Using short UUID segments (8 characters) for tokens has a non-trivial collision probability in high-throughput scenarios.
-4. **Thread safety:** The `PiiProxyService` token map was stored as a mutable instance field without synchronization, creating race conditions under concurrent requests.
-5. **Audit log timestamp format:** Initial implementation used `System.currentTimeMillis()` as a raw long value instead of ISO-8601 formatted timestamps, making logs harder to read and correlate.
-
-### Fixes Applied
-
-1. Refined the name regex to require at least 2 characters per word and added common false-positive exclusions. Documented that production deployments should use NER (Named Entity Recognition) for higher accuracy.
-2. Tightened the coordinate regex to require decimal points and valid latitude/longitude ranges (-90 to 90, -180 to 180).
-3. Extended token length to full UUID (36 characters) to eliminate collision risk.
-4. Made the proxy service create a new token map per request, eliminating shared mutable state.
-5. Changed timestamp format to ISO-8601 (`Instant.now().toString()`) for standard log compatibility.
+**File:** `.github/workflows/ci-cd.yml`
 
 ---
 
-## 5. Terraform Configurations
+Asked AI for a GitHub Actions pipeline. Looked right, had five bombs inside.
 
-**Directory:** `devops/terraform/`
-
-### Original Prompt / Intent
-
-Create Terraform configurations for provisioning AWS infrastructure to support the Persons Finder application. Include modules for: VPC (public/private subnets, NAT gateways), EKS (managed Kubernetes cluster with node groups), ECR (container registry with lifecycle policies), IAM (OIDC provider for GitHub Actions, least-privilege roles and policies), and Secrets Manager (encrypted secret storage with rotation). Provide environment-specific configurations for dev and prod.
-
-### What Was Generated
-
-A modular Terraform configuration with five reusable modules:
-- **`modules/vpc/`** — VPC with public and private subnets across 2 AZs, Internet Gateway, NAT Gateways, route tables, and security groups for EKS control plane and worker nodes.
-- **`modules/eks/`** — EKS cluster with managed node groups, aws-auth ConfigMap for IAM-to-RBAC mapping, cluster add-ons (VPC CNI, CoreDNS, kube-proxy), and IRSA support.
-- **`modules/ecr/`** — ECR repository with image scanning on push, lifecycle policies for image retention, and repository access policies.
-- **`modules/iam/`** — GitHub OIDC Identity Provider, IAM roles for GitHub Actions (ECR push, EKS access), trust policies, and least-privilege policy documents.
-- **`modules/secrets-manager/`** — AWS Secrets Manager secret for OPENAI_API_KEY with KMS encryption and rotation configuration.
-- **`environments/dev/`** and **`environments/prod/`** — Environment-specific compositions of all modules with appropriate sizing (smaller instances for dev, production-grade for prod).
-
-### Identified Flaws / Issues
-
-1. **S3 backend bootstrap:** The `backend.tf` references an S3 bucket and DynamoDB table that must exist before `terraform init`. No bootstrap instructions were provided.
-2. **NAT Gateway cost:** The dev environment was configured with 2 NAT Gateways (one per AZ), which is expensive for a development environment.
-3. **EKS node group AMI:** The initial configuration did not pin the EKS-optimized AMI version, which could cause unexpected node behavior after AMI updates.
-4. **OIDC thumbprint:** The GitHub OIDC provider configuration used a hardcoded thumbprint that may change when GitHub rotates their TLS certificates.
-5. **Secrets Manager rotation:** The rotation configuration referenced a Lambda function ARN that was not defined in the Terraform modules.
-
-### Fixes Applied
-
-1. Added bootstrap documentation in `devops/terraform/README.md` with instructions for creating the S3 bucket and DynamoDB table before first use.
-2. Reduced dev environment to a single NAT Gateway with a comment explaining the cost-availability trade-off.
-3. Added `ami_type` parameter to the EKS node group configuration and documented the AMI pinning strategy.
-4. Changed OIDC thumbprint to use the AWS-recommended approach of fetching it dynamically, with a fallback to the documented GitHub thumbprint.
-5. Made Secrets Manager rotation optional via a `rotation_enabled` variable, defaulting to `false` for environments without a rotation Lambda.
+1. OIDC role ARN was a placeholder `arn:aws:iam::role/` — would crash immediately. Changed to read from `secrets.AWS_ROLE_ARN`.
+2. Trivy had no `exit-code: '1'` — HIGH/CRITICAL CVEs were reported but never failed the build. Added it.
+3. OIDC job was missing `permissions: { id-token: write, contents: read }` — auth would fail. Added it.
+4. No Gradle wrapper validation — basic supply chain hygiene. Added `wrapper-validation-action`.
+5. No Docker layer caching — rebuilding from scratch every run. Configured `type=gha` cache.
 
 ---
 
-## 6. Application API Endpoints
+### 4. PII Redaction Service (Kotlin)
 
-**Directory:** `src/main/kotlin/com/persons/finder/`
-
-### Original Prompt / Intent
-
-Implement the core REST API endpoints for the Persons Finder application: POST `/api/v1/persons` (create person), PUT `/api/v1/persons/{id}/location` (update location), GET `/api/v1/persons/{id}/nearby?radius={km}` (find nearby people using Haversine formula), and GET `/api/v1/persons?ids={ids}` (get person details). Implement the three-layer architecture with Person/Location entities, PersonsService/LocationsService, and PersonController.
-
-### What Was Generated
-
-- **Data Layer:** `Person` and `Location` JPA entities with `PersonRepository` and `LocationRepository` extending `JpaRepository`.
-- **Domain Layer:** `PersonsService` and `LocationsService` interfaces with implementations. `LocationsServiceImpl` includes the Haversine formula for distance calculation and nearby person search.
-- **Presentation Layer:** `PersonController` with four REST endpoints handling request/response mapping, input validation, and error handling.
-
-### Identified Flaws / Issues
-
-1. **Haversine formula edge case:** The initial implementation did not handle the antipodal point case (points exactly opposite on the globe), which can produce NaN due to floating-point precision issues in `acos()`.
-2. **Location entity composite key:** The initial `Location` entity used `referenceId` as both a foreign key and primary key, which prevents storing location history.
-3. **Missing input validation:** The PUT location endpoint did not validate latitude (-90 to 90) and longitude (-180 to 180) ranges, allowing invalid coordinates.
-4. **N+1 query problem:** The nearby search loaded all locations into memory and filtered in-application code, which does not scale for large datasets.
-5. **Missing error responses:** The GET persons endpoint returned an empty list for non-existent IDs instead of distinguishing between "no results" and "invalid IDs".
-
-### Fixes Applied
-
-1. Replaced `acos()` with `atan2()` in the Haversine formula for numerical stability at all distances.
-2. Kept `referenceId` as the primary key since the current requirement is for latest-location-only semantics; documented the trade-off for future location history support.
-3. Added `@Valid` annotation and range validation (`@Min`/`@Max` or manual checks) for latitude and longitude in the controller.
-4. Documented the scalability limitation and noted that a spatial database index (PostGIS) should be used for production workloads with large datasets.
-5. The GET endpoint returns only found persons, with the response naturally being an empty list when no IDs match. This is consistent with standard REST API patterns.
+**Dir:** `src/main/kotlin/com/persons/finder/pii/`
 
 ---
 
-## 7. Spring Boot Actuator Configuration
+Asked AI to write PII detection and redaction. Good structure, a few sharp edges.
 
-**Files:** `build.gradle.kts`, `src/main/resources/application.properties`
-
-### Original Prompt / Intent
-
-Configure Spring Boot Actuator for production health monitoring. Expose `/actuator/health` endpoint that returns HTTP 200 when the application is ready and HTTP 503 when not ready. Configure readiness and liveness health indicators for Kubernetes probe integration. Implement environment variable injection for `OPENAI_API_KEY` with graceful failure when the key is missing.
-
-### What Was Generated
-
-- Added `spring-boot-starter-actuator` dependency to `build.gradle.kts`.
-- Configured `application.properties` to expose the health endpoint with `management.endpoints.web.exposure.include=health`.
-- Configured health endpoint to show component details: `management.endpoint.health.show-details=always`.
-- Implemented environment variable reading for `OPENAI_API_KEY` with a startup validation check.
-
-### Identified Flaws / Issues
-
-1. **Health endpoint exposure:** The initial configuration used `management.endpoints.web.exposure.include=*` which exposes all actuator endpoints (env, beans, metrics, etc.), creating a security risk in production.
-2. **Show details setting:** `show-details=always` exposes internal component health details to unauthenticated users, which could leak infrastructure information.
-3. **Missing Kubernetes probes configuration:** The initial setup did not enable the Kubernetes-specific probe endpoints (`/actuator/health/readiness` and `/actuator/health/liveness`).
-4. **API key validation timing:** The startup check for `OPENAI_API_KEY` threw an exception during bean initialization, preventing the health endpoint from reporting the failure gracefully.
-5. **Actuator base path:** The default `/actuator` base path was not explicitly configured, which could conflict with application routes if the API path structure changes.
-
-### Fixes Applied
-
-1. Restricted endpoint exposure to only `health`: `management.endpoints.web.exposure.include=health`.
-2. Changed to `show-details=when-authorized` for production, keeping `always` only in dev profile for debugging convenience.
-3. Added Kubernetes probe group configuration: `management.endpoint.health.probes.enabled=true` to enable `/actuator/health/readiness` and `/actuator/health/liveness`.
-4. Changed API key validation to a `@PostConstruct` check that logs a warning instead of throwing, allowing the health endpoint to report `DOWN` status with a descriptive message.
-5. Explicitly set `management.endpoints.web.base-path=/actuator` for clarity and documented it in the deployment guide.
+1. Name regex `[A-Z][a-z]+ [A-Z][a-z]+` was too greedy — "Spring Boot", "New York" all triggered it. Added word-length requirements and common exclusions.
+2. Coordinate regex matched plain integers — port numbers and IDs all flagged. Tightened to require decimal points and valid lat/lon ranges.
+3. Tokens used 8-char UUID prefix — non-trivial collision risk at scale. Extended to full 36-char UUID.
+4. Token map was stored as an instance field — concurrent requests would corrupt each other's mappings. Made it per-request.
+5. Timestamps were raw `currentTimeMillis()` longs — annoying to read in logs. Switched to ISO-8601 strings.
 
 ---
 
-## 8. Go PII Redaction Sidecar
+### 5. Terraform — AWS Infrastructure
 
-**File:** `sidecar/main.go` + `devops/docker/Dockerfile.sidecar`
-
-### Original Prompt / Intent
-
-Implement an independent Layer 2 PII redaction proxy in Go that mirrors the Kotlin `PiiProxyService` logic. The sidecar runs as a separate container in the same pod, intercepts LLM traffic on port 8081, applies the same name and coordinate regex patterns, performs reversible tokenization, and emits `PII_AUDIT` JSON audit log entries to stdout. Build with a multi-stage Dockerfile producing a static binary on an Alpine runtime image.
-
-### What Was Generated
-
-- **`sidecar/main.go`** — HTTP server with `proxyHandler()`, `redact()`, `restore()`, `logAudit()` functions. Two-pass tokenization (names first, then coordinates). Reads `LISTEN_PORT` and `UPSTREAM_URL` from environment variables.
-- **`devops/docker/Dockerfile.sidecar`** — Two-stage build: `golang:1.25-alpine3.21` → `alpine:3.21`, non-root user, static binary.
-
-### Identified Flaws / Issues
-
-1. **Regex pattern mismatch:** The initial Go `coordPattern` used `\d+\.\d+` without the leading `-?` and range bounds, diverging from the Kotlin implementation and failing to match negative coordinates.
-2. **No coordinate range validation:** Unlike `PiiDetector.kt` which rejects values outside `[-180, 180]`, the initial Go version tokenized any decimal number, producing false positives on version strings like `1.25` or `3.21`.
-3. **Token numbers inside existing tokens:** After replacing a name with `<NAME_xxxx>`, the hex digits inside the token could be matched again by the coordinate pattern, corrupting the token.
-4. **No `/health` endpoint:** The initial handler only had `proxyHandler` on `/`, causing Kubernetes liveness/readiness probes to fail with non-200 responses on `GET /health`.
-5. **`log.Println` vs `fmt.Println`:** Audit JSON was emitted via `log.Println`, which prepends a timestamp prefix, breaking the clean JSON-per-line format that Fluent Bit's `pii_audit_json` parser expects.
-
-### Fixes Applied
-
-1. Updated `coordPattern` to `-?\d{1,3}\.\d{1,15}` matching the Kotlin regex exactly (`RedactionConfig.kt` line 22).
-2. Added coordinate range validation: skip matches where `strconv.ParseFloat` produces a value outside `[-180.0, 180.0]`.
-3. Added `strings.ContainsAny(match, "<>")` guard in the coordinate pass to skip anything already inside an angle-bracket token.
-4. Added explicit `/health` route returning `{"status":"ok","layer":"pii-sidecar"}` (line 222–224).
-5. Switched audit output to `log.Println(string(b))` after `json.Marshal` — Go's `log` package writes to stderr by default; changed to `fmt.Fprintln(os.Stdout, ...)` so Fluent Bit reads from the correct stream.
+**Dir:** `devops/terraform/`
 
 ---
 
-## 9. Kyverno Image Signature Enforcement
+Asked AI for full Terraform (VPC/EKS/ECR/IAM/Secrets Manager). Good structure, five gotchas.
+
+1. `backend.tf` requires an S3 bucket and DynamoDB table to already exist before `terraform init`. AI didn't mention this — I almost crashed on init.
+2. Dev environment had two NAT Gateways — unnecessary cost. Reduced to one.
+3. EKS node AMI not pinned — could break on AMI updates. Added `ami_type` parameter.
+4. OIDC thumbprint was hardcoded — breaks when GitHub rotates TLS certs. Switched to dynamic fetch.
+5. Secrets Manager rotation referenced a Lambda ARN that didn't exist. Made rotation optional via variable, default off.
+
+---
+
+### 6. Application API Endpoints
+
+**Dir:** `src/main/kotlin/com/persons/finder/`
+
+---
+
+Asked AI for four REST endpoints and three-layer architecture. Runs, but a few issues.
+
+1. Haversine used `acos()` — produces NaN at antipodal points. Switched to `atan2()` for numerical stability.
+2. `Location` entity used `referenceId` as both FK and PK — no history possible. Intentional design (latest-location-only for now), added a comment documenting the trade-off.
+3. PUT location had no lat/lon range validation — you could pass 9999. Added range checks.
+4. Nearby search loaded all locations into memory then filtered — doesn't scale. Added a comment: needs PostGIS for production, acceptable at current scale.
+5. GET returns empty list for missing IDs rather than distinguishing "not found" from "bad input" — kept as-is, standard REST behavior.
+
+---
+
+### 7. Spring Boot Actuator Config
+
+**Files:** `build.gradle.kts`, `application.properties`
+
+---
+
+Asked AI to configure health checks. Usable output, but security and functional issues.
+
+1. Used `exposure.include=*` — exposes env, beans, metrics, everything. Not for production. Changed to only expose `health`.
+2. `show-details=always` leaks internal state (DB, disk) to anyone. Changed to `when-authorized` for prod.
+3. Kubernetes probe paths (`/readiness`, `/liveness`) weren't enabled — K8s probes were configured but went nowhere. Added `probes.enabled=true`.
+4. Missing API key threw an exception during bean init — health endpoint couldn't even start to report the failure. Changed to a `@PostConstruct` warning log.
+5. Actuator base path wasn't explicit — nearly conflicted with API routes later. Set `/actuator` explicitly.
+
+---
+
+### 8. Go PII Redaction Sidecar
+
+**File:** `sidecar/main.go`
+
+---
+
+Asked AI to write a Go version of the PII proxy matching the Kotlin logic. Right structure, five bugs.
+
+1. Coordinate regex was missing the `-?` prefix and range bounds — missed negative coordinates and false-positive'd on version strings like `1.25`.
+2. After replacing names with `<NAME_xxxx>` tokens, the coordinate regex would match the hex digits inside the token and corrupt it. Added a `<>` character check to skip already-tokenized content.
+3. No `/health` endpoint — K8s probes got 404 forever, pod never became ready. Added a route returning `{"status":"ok"}`.
+4. Audit logs used `log.Println` — Go's log package prepends a timestamp, breaking the JSON format Fluent Bit expected. Switched to `fmt.Fprintln(os.Stdout, ...)`.
+5. `log.Println` also defaults to stderr — Fluent Bit reads stdout. All audit logs were silently dropped.
+
+---
+
+### 9. Kyverno Image Signature Enforcement
 
 **File:** `devops/kyverno/verify-image-signatures.yaml`
 
-### Original Prompt / Intent
+---
 
-Create a Kyverno `ClusterPolicy` that enforces cosign image signature verification for all pods in the `default` namespace. The policy should cover both the main `persons-finder` image and the `pii-redaction-sidecar` image, use the project's AWS KMS public key (ECC_NIST_P256), start in `Audit` mode, and document the prerequisites for switching to `Enforce` mode (IRSA configuration, webhook timeout).
+Asked AI for a Kyverno policy. Basically right, but missed important things.
 
-### What Was Generated
-
-A `ClusterPolicy` in `Audit` mode with a single `verifyImages` rule targeting `persons-finder:*`, using an inline `publicKeys` PEM block. `mutateDigest: true` and `verifyDigest: true` were both set (defaults).
-
-### Identified Flaws / Issues
-
-1. **Missing sidecar image reference:** The initial policy only listed the main application image. The sidecar `pii-redaction-sidecar` image was not covered, leaving a bypass vector.
-2. **`mutateDigest: true` (default):** With ECR IMMUTABLE tags, rewriting the pod spec tag reference to `@sha256:...` is unnecessary and adds operational complexity (ArgoCD diff noise, rollback confusion).
-3. **`verifyDigest: true` (default):** Requiring digest-pinned image references in pod specs is overly strict when the ECR repo uses IMMUTABLE tags — a tag always maps to the same digest.
-4. **Webhook timeout:** Kyverno's default 10s webhook timeout was too short for ECR signature API calls without IRSA (~11s via NAT). The policy would intermittently block valid images.
-5. **No IRSA prerequisite documentation:** The generated file had no comments explaining the IRSA requirement, causing the first deployment to fail with timeout errors.
-
-### Fixes Applied
-
-1. Added `pii-redaction-sidecar:*` to `imageReferences` (line 51 of final file).
-2. Set `mutateDigest: false` — tags are immutable; no rewrite needed.
-3. Set `verifyDigest: false` — tag references are sufficient given ECR IMMUTABLE policy.
-4. Configured IRSA for the `kyverno-admission-controller` ServiceAccount; ECR calls now complete in ~1s. Documented the prerequisite in file header comments.
-5. Added detailed prerequisite block at top of file explaining OIDC, IRSA, and webhook timeout options before activation.
+1. Only listed the main image — sidecar was unguarded, a bypass vector. Added `pii-redaction-sidecar:*` to `imageReferences`.
+2. `mutateDigest: true` (default) — ECR uses IMMUTABLE tags, no need to rewrite to digest. It also causes constant ArgoCD diffs. Turned it off.
+3. `verifyDigest: true` (default) — IMMUTABLE tags are trustworthy enough. Tag references are fine. Turned it off.
+4. Without IRSA, ECR API takes ~11s. Webhook timeout is 10s. It just times out. Configure IRSA before enabling Enforce.
+5. Generated file had zero prerequisite documentation — first deployment just exploded. Added a detailed header comment.
 
 ---
 
-## 10. Layer 3 NetworkPolicy (VPC CNI eBPF)
+### 10. NetworkPolicy — Layer 3
 
-**Files:** `devops/helm/persons-finder/templates/networkpolicy.yaml` · `values.yaml` egress rules
-
-### Original Prompt / Intent
-
-Implement Kubernetes NetworkPolicy for the persons-finder pod covering both ingress and egress. Egress must allow: DNS (UDP/TCP 53), same-namespace pod traffic (sidecar communication), and external HTTPS (TCP 443) to reach api.openai.com, ECR, AWS STS, and the EKS control plane. Block all RFC1918 private ranges on port 443 to prevent lateral movement. Enable AWS VPC CNI `enableNetworkPolicy` for eBPF kernel-level enforcement.
-
-### What Was Generated
-
-A `NetworkPolicy` Helm template with `Ingress` and `Egress` policy types. Egress allowed `0.0.0.0/0` on TCP 443 with an `except` block for private ranges, and a DNS rule.
-
-### Identified Flaws / Issues
-
-1. **Missing internal pod egress:** The initial egress rules blocked same-namespace pod traffic (main app → sidecar on localhost:8081). Without an explicit `podSelector: {}` rule, inter-container communication through the pod network was restricted.
-2. **No DNS TCP rule:** Only `UDP 53` was listed for DNS. Some DNS resolvers (large responses, zone transfers) fall back to TCP 53; omitting it caused intermittent DNS failures.
-3. **`networkpolicies` missing from deployer ClusterRole:** The CI `deployer` service account's `ClusterRole` did not include `networkpolicies` in its resource list, causing `helm upgrade` to fail with a RBAC forbidden error when NetworkPolicy was enabled.
-4. **VPC CNI addon not enabled:** `enableNetworkPolicy: true` was not set in the EKS VPC CNI addon config, so the NetworkPolicy was parsed by the API server but not enforced at the kernel level.
-5. **`enabled: false` default not toggled in CI:** The CI deploy command did not pass `--set networkPolicy.enabled=true`, so prod deployments ran without the policy despite it being defined.
-
-### Fixes Applied
-
-1. Added `- to: [{podSelector: {}}]` egress rule to allow all intra-namespace pod traffic.
-2. Added `protocol: TCP, port: 53` alongside the UDP rule in the DNS egress block.
-3. Added `networkpolicies` to the deployer `ClusterRole` resources list (commit `b416dbd`).
-4. Set `enableNetworkPolicy: "true"` in the EKS VPC CNI managed addon config via Terraform `aws_eks_addon`.
-5. Added `--set networkPolicy.enabled=true` to the CI `helm upgrade` command in `ci-cd.yml`.
+**File:** `devops/helm/persons-finder/templates/networkpolicy.yaml`
 
 ---
 
-## 11. Layer 4 Fluent Bit DaemonSet + CloudWatch
+Asked AI for a NetworkPolicy. Looked complete, four problems in practice.
 
-**Files:** `devops/k8s/fluent-bit.yaml` · `devops/terraform/environments/prod/cloudwatch.tf`
-
-### Original Prompt / Intent
-
-Deploy a Fluent Bit DaemonSet in `kube-system` to collect `PII_AUDIT` JSON log entries from persons-finder pod stdout, ship them to CloudWatch Logs (`/eks/persons-finder/pii-audit`), and create CloudWatch metric filters and an alarm for zero-redaction events. Provision the log group, IAM permissions, and alarm via Terraform.
-
-### What Was Generated
-
-- **`fluent-bit.yaml`** — DaemonSet with ServiceAccount, ClusterRole, ClusterRoleBinding, ConfigMap (SERVICE/INPUT/FILTER/OUTPUT blocks), and DaemonSet spec. SQLite position DB path set to `/var/log/flb_pii_audit.db`.
-- **`cloudwatch.tf`** — `aws_cloudwatch_log_group`, `aws_iam_role_policy`, two `aws_cloudwatch_log_metric_filter` resources, and `aws_cloudwatch_metric_alarm`.
-
-### Identified Flaws / Issues
-
-1. **SQLite DB in read-only mount:** `/var/log` hostPath was mounted `readOnly: true`, but the `DB /var/log/flb_pii_audit.db` config required write access. Pod entered `CrashLoopBackOff` immediately with `[error] [sqldb] cannot open database`.
-2. **`auto_create_group true`:** The initial ConfigMap set `auto_create_group true`, requiring Fluent Bit to have `logs:CreateLogGroup` permission. The IAM policy only granted stream-level actions, causing permission errors.
-3. **Missing `logs:DescribeLogGroups`:** Fluent Bit's health check calls `DescribeLogGroups` before writing. The IAM policy omitted this action, producing a silent connection failure on startup.
-4. **No tolerations:** DaemonSet lacked `tolerations` for `NoSchedule` taints, so it would not run on nodes with custom taints (e.g., system node pools).
-5. **Metric filter pattern used single quotes:** CloudWatch metric filter pattern `{ $.type = 'PII_AUDIT' }` used single quotes, which CloudWatch does not accept. The correct syntax requires double quotes.
-
-### Fixes Applied
-
-1. Added `emptyDir` volume `fluent-bit-state`, changed DB path to `/fluent-bit/state/flb_pii_audit.db`, added volumeMount (documented in `run6.md` Section 3.1).
-2. Changed `auto_create_group false` — log group is pre-created by Terraform; Fluent Bit only needs stream-level permissions.
-3. Added `logs:DescribeLogGroups` to the IAM policy `Action` list (`cloudwatch.tf` lines 41).
-4. Added broad `tolerations` block (NoSchedule + NoExecute + Exists) so Fluent Bit runs on all node types.
-5. Fixed metric filter patterns to use escaped double quotes: `{ $.type = \"PII_AUDIT\" }`.
+1. No `podSelector: {}` egress rule — main app and sidecar couldn't talk to each other over localhost:8081 inside the same pod. Added it.
+2. DNS was UDP-only — large DNS responses fall back to TCP 53, causing intermittent DNS failures. Added TCP 53 too.
+3. Deployer ClusterRole was missing `networkpolicies` — enabling NetworkPolicy made every `helm upgrade` fail with RBAC forbidden. Added it.
+4. VPC CNI addon didn't have `enableNetworkPolicy: "true"` — policies existed but were never enforced. Added the Terraform config.
 
 ---
 
-## 12. Supply Chain Security (cosign + SBOM + Periodic Re-scan)
+### 11. Fluent Bit + CloudWatch — Layer 4
 
-**Files:** `.github/workflows/ci-cd.yml` (lines 122–183) · `.github/workflows/security-rescan.yml` · `.trivyignore`
-
-### Original Prompt / Intent
-
-Extend the CI pipeline with supply chain security: generate a CycloneDX SBOM after each Trivy-clean build, sign the image and attest the SBOM using cosign with an AWS KMS key (ECC_NIST_P256), and add a separate scheduled workflow to re-scan the 5 most recently deployed images every Monday against the latest CVE database.
-
-### What Was Generated
-
-- **SBOM step:** `trivy image --format cyclonedx` writing to `sbom.cdx.json`, uploaded as a GitHub artifact.
-- **cosign steps:** `cosign sign --key awskms:///` and `cosign attest --predicate sbom.cdx.json`.
-- **`security-rescan.yml`:** Scheduled workflow with `aws ecr list-images`, a loop over recent tags, and `trivy image --exit-code 1` for each.
-
-### Identified Flaws / Issues
-
-1. **`cosign sign` before image digest available:** The initial pipeline called `cosign sign` using the image tag reference immediately after `docker push`, before ECR had processed the manifest. On slow connections this produced `MANIFEST_UNKNOWN` errors.
-2. **Missing `--yes` flag on `cosign sign`:** cosign 2.x requires `--yes` to confirm signing non-interactively; without it the step would hang waiting for terminal input in CI.
-3. **`security-rescan.yml` fetched all tags:** `aws ecr list-images` with no filter returned every tag including `pr-*` branches and semver releases, causing the re-scan loop to scan hundreds of images and hit IAM rate limits.
-4. **`.trivyignore` entries undocumented:** The initial suppression file listed CVE IDs with no rationale, no severity, and no removal conditions — failing the project's documentation standard.
-5. **SBOM artifact retention default (0 days):** GitHub Actions `upload-artifact` defaults to 0 days retention unless explicitly set; the SBOM would be deleted immediately.
-
-### Fixes Applied
-
-1. Added `sleep 5` after `docker push` to allow ECR manifest propagation; switched to image digest reference (`IMAGE_REF=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE")`) for cosign operations.
-2. Added `--yes` to both `cosign sign` and `cosign attest` commands.
-3. Filtered re-scan to only `git-*` prefixed tags using `--filter tagStatus=TAGGED` and `jq` post-processing; limited to 5 most recent by `sort | tail -5`.
-4. Rewrote `.trivyignore` (55 lines): each entry now includes CVE ID, severity, affected component, exploit condition, and an explicit removal condition (e.g., "Remove when `golang:1.25.7+` appears on Docker Hub").
-5. Set `retention-days: 90` on the `upload-artifact` step for the SBOM artifact.
+**Files:** `devops/k8s/fluent-bit.yaml`, `cloudwatch.tf`
 
 ---
 
-## 13. GitHub Actions OIDC Multi-Repository Trust Policy
+Asked AI to deploy Fluent Bit shipping logs to CloudWatch. Got a full config, five things wrong.
+
+1. SQLite state file path `/var/log/flb_pii_audit.db` — but `/var/log` was read-only mounted. Pod CrashLoopBackOff immediately. Moved to emptyDir at `/fluent-bit/state/`.
+2. `auto_create_group true` needs `logs:CreateLogGroup` permission — IAM only had stream-level permissions. Kept hitting errors. Changed to false, log group pre-created by Terraform.
+3. IAM was missing `logs:DescribeLogGroups` — Fluent Bit silently fails its health check on startup without it. Added it.
+4. DaemonSet had no tolerations — wouldn't run on tainted nodes. Added a broad toleration block.
+5. CloudWatch metric filter used single quotes `{ $.type = 'PII_AUDIT' }` — CloudWatch only accepts double quotes. Silently never matched. Fixed to `\"PII_AUDIT\"`.
+
+---
+
+### 12. Supply Chain Security: cosign + SBOM + Periodic Re-scan
+
+**Files:** `ci-cd.yml`, `security-rescan.yml`, `.trivyignore`
+
+---
+
+Asked AI to add supply chain security: SBOM, cosign signing, periodic re-scan. Right framework, five detail bugs.
+
+1. `cosign sign` ran immediately after `docker push` — ECR manifest hadn't propagated yet, got `MANIFEST_UNKNOWN`. Added a 5s sleep and switched to signing by digest reference.
+2. `cosign sign` missing `--yes` — hangs waiting for terminal input in CI. Added it.
+3. Periodic re-scan used `aws ecr list-images` with no filter — scanned hundreds of tags and hit IAM rate limits. Filtered to `git-*` prefix, latest 5 only.
+4. `.trivyignore` had just CVE IDs with no context — rewrote each entry to include rationale, severity, affected component, and removal condition.
+5. SBOM artifact had no retention setting — default is 0 days, deleted immediately on upload. Added `retention-days: 90`.
+
+---
+
+### 13. OIDC Trust Policy Repo Mismatch
 
 **File:** `devops/terraform/modules/iam/trust-policies/github-oidc.json`
 
-### Original Prompt / Intent
+---
 
-Generate an AWS IAM trust policy for GitHub Actions OIDC authentication. The policy should allow the CI/CD pipeline to assume an IAM role for ECR push and EKS deployment, scoped to the specific GitHub organisation and repository.
+Classic gotcha: AI generated an OIDC trust policy scoped to the wrong repo. Every CI run got AccessDenied.
 
-### What Was Generated
+App code lives in `persons-finder`, but the CI/CD workflow runs from `persons-finder-devops`. The OIDC token carries the devops repo name. Policy only matched `persons-finder`. Mismatch. AccessDenied every time.
 
-A trust policy using `StringEquals` to match the OIDC sub-claim against `repo:${github_org}/${github_repo}:*` — a single exact-match pattern for one repository.
-
-### Identified Flaws / Issues
-
-1. **Single-repository scope with wrong repo name:** Application source code lives in `persons-finder` but the CI/CD workflow runs from `persons-finder-devops`. The OIDC token sub-claim carries the devops repo name, which did not match the trust policy, causing every CI run to fail with `AccessDenied`.
-2. **`StringEquals` cannot match multiple values or wildcards:** For multi-value matching, `StringLike` is required. `StringEquals` performs exact string comparison and silently rejects all other values without explanation in the error output.
-3. **No documentation of split-repo convention:** The generated policy had no comments explaining the sub-claim format or the common split application/devops repository pattern.
-
-### Fixes Applied
-
-1. Changed condition operator from `StringEquals` to `StringLike` and added both repository patterns as a list, covering `persons-finder:*` and `persons-finder-devops:*`.
-2. Parameterised via `${github_org}` and `${github_repo}` Terraform variables so the pattern generalises without hardcoding.
-3. Added inline comments documenting the OIDC sub-claim format and the two-repo convention.
+Also used `StringEquals` — which is exact-match only, no wildcards. Changed to `StringLike` and added both repo patterns.
 
 ---
 
-## 14. EKS Node Pod Capacity and Rolling Update Deadlock
+### 14. t3.small Pod Cap & Rolling Update Deadlock
 
 **File:** `devops/helm/persons-finder/templates/deployment.yaml`
 
-### Original Prompt / Intent
+---
 
-Generate a Kubernetes Deployment with a rolling update strategy that provides zero-downtime upgrades.
+Sneaky bug: AI gave default `maxSurge: 1`, which deadlocks on t3.small.
 
-### What Was Generated
+t3.small has an ENI limit of 11 pods per node. At baseline capacity (11 pods), `maxSurge: 1` tries to schedule a new pod before killing the old one. New pod stays Pending forever. Old pod never gets killed. Upgrade freezes.
 
-A Deployment using the Kubernetes defaults: `maxSurge: 1`, `maxUnavailable: 0`.
+Tried setting `ENABLE_PREFIX_DELEGATION=true` on the `aws-node` DaemonSet at runtime to increase capacity — VPC CNI restarted in a broken state, new pods couldn't get IPs, brief outage. This config change requires node replacement via Launch Template, can't be hot-applied.
 
-### Identified Flaws / Issues
+Fixed at the time: `maxSurge: 0, maxUnavailable: 1` — kill old first, then start new. Brief unavailability window but the upgrade actually completes.
 
-1. **Default `maxSurge: 1` deadlocks on ENI-constrained nodes:** t3.small instances have a hard ENI limit of 11 pods per node. At baseline capacity (11 pods scheduled), a `maxSurge: 1` upgrade attempts to schedule a 12th pod before terminating the old one. The new pod stays `Pending` indefinitely — the upgrade never progresses and the old pod is never released.
-2. **ENI prefix delegation cannot be enabled at runtime:** The natural workaround — enabling `ENABLE_PREFIX_DELEGATION=true` via `kubectl set env` on the `aws-node` DaemonSet — caused the VPC CNI agent to restart in a transition state. During the transition, new pods could not obtain IP addresses (`failed to assign an IP address to container`), resulting in a brief service outage. ENI prefix delegation requires node replacement via a new Launch Template to take effect cleanly.
-3. **No capacity planning comment in generated manifest:** The AI output contained no guidance on node instance type pod limits or the scheduling headroom required for rolling updates.
-
-### Fixes Applied
-
-1. Set `maxSurge: 0` and `maxUnavailable: 1` — terminate the running pod first, then schedule the replacement. This trades a brief availability window for schedulability on capacity-constrained nodes, which is the correct trade-off at single-node scale.
-2. Documented the ENI prefix delegation lesson: changes must be applied at the Terraform Launch Template level (`http_put_response_hop_limit`, node group recreation) rather than via live DaemonSet environment variable injection.
-3. Added a comment in `deployment.yaml` explaining the t3.small pod limit and the `maxSurge: 0` rationale for reviewers.
+> **Update — current actual state (verified):**
+>
+> Three nodes, two nodegroups:
+>
+> | Nodegroup | Count | Type | AZ | What actually runs there |
+> |---|---|---|---|---|
+> | `system-nodes-prod` | 1 | ON_DEMAND | ap-southeast-2a | ingress-nginx + DaemonSets (aws-node/kube-proxy/fluent-bit) |
+> | `persons-finder-nodes-prod` | 2 | SPOT | ap-southeast-2b (both same AZ) | persons-finder ×3 + kyverno + cert-manager + external-secrets + coredns |
+>
+> `maxSurge` is still `0` — not updated yet despite having two app nodes now.
+>
+> **Residual risks found during verification:**
+> 1. Kyverno admission controller and cert-manager are running on SPOT nodes — no `nodeSelector`/toleration to pin them to the system node. A SPOT interruption takes down the Kyverno webhook; combined with `failurePolicy: Fail`, this blocks all pod creation cluster-wide.
+> 2. Both SPOT app nodes are in `ap-southeast-2b` — a single AZ failure loses all application replicas simultaneously.
 
 ---
 
-## 15. Kyverno Admission Webhook Latency and IRSA Chain
+### 15. Kyverno Webhook Timeout & IRSA
 
-**File:** `devops/kyverno/verify-image-signatures.yaml` + `devops/terraform/environments/prod/main.tf`
-
-### Original Prompt / Intent
-
-Generate a Kyverno `ClusterPolicy` that enforces cosign signature verification using an AWS KMS key, blocking unsigned images from deploying in the `default` namespace.
-
-### What Was Generated
-
-A `ClusterPolicy` with `validationFailureAction: Audit` and default webhook configuration. No IRSA setup was included or mentioned.
-
-### Identified Flaws / Issues
-
-1. **ECR API call chain latency without IRSA exceeds webhook timeout:** Kyverno's admission webhook must call ECR to retrieve the cosign signature manifest during pod creation. Without IRSA, the credential chain is: EC2 IMDS → node IAM role → STS → ECR `GetAuthorizationToken` → ECR API. On a t3.small node routed through a NAT Gateway (no VPC Endpoint), this chain takes approximately 11 seconds — exceeding Kyverno's default 10-second webhook timeout.
-2. **`failurePolicy: Fail` on the mutating webhook applies regardless of `validationFailureAction`:** Even with `validationFailureAction: Audit`, the Kyverno mutating webhook (`mutate.kyverno.svc-fail`) uses `failurePolicy: Fail`. A timeout on the mutating webhook returns an unconditional admission error, blocking all deployments — regardless of Audit mode intent. The policy cannot be "safely" tested in Audit mode without IRSA.
-3. **`mutateDigest: true` incompatible with Audit mode in Kyverno 1.17.1:** This version rejects policies combining `validationFailureAction: Audit` with the default `mutateDigest: true`, producing a webhook validation error at policy creation time.
-4. **`verifyDigest: true` (default) blocks tag-based references:** The default requires pod specs to use `@sha256:...` digest notation. All existing deployments using tag references (e.g., `git-<sha>`) are blocked even after a successful signature verification pass.
-5. **No prerequisite documentation for Enforce activation:** The generated file contained no guidance on the IRSA configuration required before switching from `Audit` to `Enforce` mode, making the activation sequence non-obvious.
-
-### Fixes Applied
-
-1. Configured IRSA for the `kyverno-admission-controller` ServiceAccount: registered the EKS OIDC issuer as an `aws_iam_openid_connect_provider`, created a dedicated IAM role with trust policy scoped to the exact ServiceAccount, and attached `AmazonEC2ContainerRegistryReadOnly`. ECR API latency dropped from ~11s to ~1s.
-2. Set `mutateDigest: false` — ECR IMMUTABLE tags guarantee tag-to-digest stability; rewriting pod spec tag references to digest format adds operational noise (ArgoCD diff, rollback confusion) with no security benefit.
-3. Set `verifyDigest: false` — with IMMUTABLE tags, a tag reference is as trustworthy as a digest reference.
-4. Added a prerequisite documentation block at the top of the policy file covering: OIDC provider registration, IRSA role annotation, the `Audit → Enforce` promotion checklist, and the `verifyDigest`/`mutateDigest` rationale.
+**Files:** `verify-image-signatures.yaml`, `prod/main.tf`
 
 ---
 
-## 16. Deployer RBAC Latent Gap Exposed on Fresh Cluster Rebuild
+Enabling Kyverno image verification was a cascade of gotchas. Root cause: IRSA not configured.
+
+Without IRSA, Kyverno needs to hit ECR to fetch the cosign manifest: EC2 IMDS → node IAM role → STS → ECR. On t3.small through a NAT Gateway this takes ~11 seconds. Webhook timeout is 10 seconds. Times out, admission error.
+
+The real nasty bit: even in `Audit` mode, Kyverno's mutating webhook uses `failurePolicy: Fail`. A timeout on the mutating webhook gives you an unconditional admission rejection, regardless of `validationFailureAction`. Audit mode does not mean safe testing mode.
+
+Also: Kyverno 1.17.1 rejects policies combining `validationFailureAction: Audit` with `mutateDigest: true`. Disabled both `mutateDigest` and `verifyDigest`.
+
+After configuring IRSA, ECR calls dropped from 11s to 1s. Problem gone.
+
+---
+
+### 16. The RBAC Gap That Only Shows on Fresh Clusters
 
 **File:** `devops/terraform/modules/eks/aws-auth.tf`
 
-### Original Prompt / Intent
+---
 
-Generate Terraform resources to map the GitHub Actions IAM role to a Kubernetes group (`deployers`) in the EKS `aws-auth` ConfigMap, granting the CI pipeline permission to run `helm upgrade --install`.
+Classic "insufficient testing" bug — worked fine on the old cluster, blew up on a fresh one.
 
-### What Was Generated
+AI generated the `aws-auth` ConfigMap group mapping, tying the GitHub Actions IAM role to the `deployers` group. But didn't create a `ClusterRole` or `ClusterRoleBinding` for `deployers`. In Kubernetes, identity without a binding equals zero permissions.
 
-An `aws-auth` ConfigMap entry mapping the IAM role ARN to the `deployers` Kubernetes group. No `ClusterRole` or `ClusterRoleBinding` was generated for the group.
+Hadn't caught it before because the cluster was never fully destroyed and rebuilt — the old cluster had RBAC objects left over from earlier manual work. First complete `destroy + apply`, clean cluster, every `helm upgrade` failed with `secrets is forbidden`.
 
-### Identified Flaws / Issues
+Helm stores release state in Kubernetes Secrets. Without `secrets` CRUD, `helm upgrade` can't even start.
 
-1. **Group identity without RBAC binding grants zero permissions:** An `aws-auth` group mapping creates a Kubernetes identity but confers no access. A Kubernetes group has no authorised actions until a `Role` or `ClusterRole` is bound to it via a `RoleBinding` or `ClusterRoleBinding`. The generated output was structurally incomplete.
-2. **Latent failure: only observable on a fresh cluster rebuild:** The bug went undetected across multiple deployment sessions because the cluster was always operated from an existing Terraform state that happened to have pre-existing RBAC objects from manual operations. The first complete `terraform destroy` + `terraform apply` cycle created a clean cluster where the missing ClusterRole caused every `helm upgrade` call to fail with `secrets is forbidden`.
-3. **Helm release state requires Secret access:** Helm stores release manifests as Kubernetes Secrets (`sh.helm.release.v1.*`). Without `secrets` CRUD permissions in the ClusterRole, `helm upgrade` fails with a `forbidden` error even when the deployed application itself requires no secret access.
-
-### Fixes Applied
-
-1. Added `kubernetes_cluster_role.deployer` in Terraform with the minimum permissions required for `helm upgrade`: CRUD on `deployments`, `services`, `serviceaccounts`, `secrets`, `configmaps`, `ingresses`, `horizontalpodautoscalers`, `roles`, `rolebindings`, and `networkpolicies`.
-2. Added `kubernetes_cluster_role_binding.deployer` binding the `deployers` group to the ClusterRole.
-3. Added `depends_on = [aws_eks_cluster.main]` on both resources to ensure the EKS API server is available before Terraform attempts to create Kubernetes RBAC objects.
+Fixed by adding the ClusterRole (with secrets CRUD) and ClusterRoleBinding, plus `depends_on` so EKS is ready before Terraform tries to create RBAC objects.
 
 ---
 
-## 17. KMS Cosign Key Lifecycle After Terraform Destroy
+### 17. KMS Key Changes After Destroy
 
-**Files:** `devops/kyverno/verify-image-signatures.yaml` · `.github/workflows/ci-cd.yml` · `devops/scripts/setup-eks.sh`
-
-### Original Prompt / Intent
-
-Generate a Kyverno `ClusterPolicy` that verifies cosign signatures using an inline AWS KMS ECC_NIST_P256 public key, and a CI workflow step that signs images with `cosign sign --key awskms:///`.
-
-### What Was Generated
-
-A policy with an inline PEM public key block and a CI workflow with a hardcoded `COSIGN_KMS_ARN` env variable — both referencing the key created by the initial `terraform apply`.
-
-### Identified Flaws / Issues
-
-1. **AWS KMS asymmetric keys cannot be automatically rotated:** AWS KMS automatic key rotation only applies to symmetric keys. Each `terraform destroy` followed by `terraform apply` creates an entirely new KMS key with a new key ID, ARN, and a completely different ECC public key. Neither the generated policy nor the CI workflow documented this lifecycle dependency.
-2. **Stale public key in Kyverno Enforce policy blocks the entire cluster:** When the policy is not updated after a key rebuild, cosign signs new images with the new key while Kyverno verifies against the old embedded public key. Since the policy is in `Enforce` mode, every pod creation — including system pods — is rejected cluster-wide until the policy is updated.
-3. **Hardcoded KMS ARN in CI workflow with no update instruction:** The ARN was hardcoded in `ci-cd.yml` as a plain `env` variable. After infrastructure rebuild, the workflow continues referencing the old (now-deleted) key ARN, causing `cosign sign` to fail silently or error with a KMS `NotFoundException`.
-4. **No key re-extraction step in setup procedure:** The `setup-eks.sh` script had no step to re-extract the new public key and update the policy after infrastructure rebuild, making every rebuild a potential silent cluster lockout.
-
-### Fixes Applied
-
-1. Added a key extraction and policy update step to `setup-eks.sh` (Step 8): uses `aws kms get-public-key | base64 --decode | openssl ec -pubin -inform DER -outform PEM` to extract the new PEM, updates `verify-image-signatures.yaml` via `sed`, and runs `kubectl apply` before the app is deployed.
-2. Added a prominent warning comment in `setup-eks.sh` and `devops/scripts/README.md`: "After each `terraform destroy + apply`, re-extract the cosign public key and update the Kyverno policy **before** running `helm upgrade`, or Enforce mode will block all pod creation."
-3. Added a `cosign_key_arn` output to `devops/terraform/environments/prod/main.tf` so the new ARN is always visible after `terraform apply` and can be copy-pasted into `ci-cd.yml`.
+**Files:** `verify-image-signatures.yaml`, `ci-cd.yml`, `setup-eks.sh`
 
 ---
 
-## 18. Go Sidecar Outbound Proxy Direction Architecture
+Non-obvious but high-severity: rebuilding infrastructure locks down the entire cluster via Kyverno.
 
-**Files:** `devops/helm/persons-finder/values.yaml` · `devops/helm/persons-finder/templates/deployment.yaml`
+AWS KMS asymmetric keys don't support automatic rotation. Every `terraform destroy + apply` creates a brand-new key with a new ARN and a different public key.
 
-### Original Prompt / Intent
+Kyverno policy has the old public key embedded. CI signs with the new key. Kyverno verifies against the old key. Everything fails. In Enforce mode, zero pods can be created — including system pods. Cluster becomes a brick.
 
-Wire the Go PII redaction sidecar container into the Helm Deployment so that the main Spring Boot application routes all LLM API calls through the sidecar proxy before they leave the pod.
+CI workflow had the ARN hardcoded — keeps using the old (now-deleted) key after rebuild. `cosign sign` throws KMS `NotFoundException`.
 
-### What Was Generated
-
-A sidecar container spec with environment variables `TARGET_HOST: localhost` and `TARGET_PORT: 8080` — pointing the sidecar back at the main application container.
-
-### Identified Flaws / Issues
-
-1. **Proxy direction reversed — sidecar wired as inbound reverse proxy, not outbound forward proxy:** `TARGET_HOST: localhost / TARGET_PORT: 8080` configures the sidecar to forward requests **to** the main application on port 8080. The intended architecture is the opposite: the main application routes LLM calls **to** the sidecar on port 8081, which then forwards to `api.openai.com`. The generated wiring implements a reverse proxy (external → app), not a forward proxy (app → external LLM).
-2. **`LLM_PROXY_URL` never injected into the main container:** The main Spring Boot container had no mechanism to redirect its LLM HTTP calls through the sidecar. Without `LLM_PROXY_URL=http://localhost:8081` injected as an environment variable and consumed by the application, all LLM traffic bypassed the sidecar entirely even when it was running.
-3. **Sidecar liveness probe absent:** No liveness or readiness probe was defined for the sidecar container. Kubernetes had no way to detect if the sidecar process had crashed, leaving the pod in a notionally healthy state while Layer 2 protection was silently offline.
-
-### Fixes Applied
-
-1. Replaced `TARGET_HOST` / `TARGET_PORT` with `LISTEN_PORT: 8081` (sidecar's listen port) and `UPSTREAM_URL: https://api.openai.com` (the real LLM provider endpoint). The sidecar now correctly acts as an outbound forward proxy.
-2. Added conditional injection of `LLM_PROXY_URL: http://localhost:8081` into the main container when `sidecar.enabled: true`, consumed by `EnvironmentConfig.kt` via `@Value("${llm.proxy-url:https://api.openai.com}")`. When the sidecar is disabled (dev), the main container falls back to calling OpenAI directly.
-3. Added `livenessProbe` and `readinessProbe` on the sidecar container pointing to `GET /health` on port 8081, ensuring pod health reflects the state of both containers.
+Added a step to `setup-eks.sh`: after every rebuild, automatically extract the new public key and update the policy. Added a big warning comment: "Update Kyverno policy BEFORE deploying or Enforce mode bricks the cluster." Added a `cosign_key_arn` Terraform output for easy copy-paste.
 
 ---
 
-## Summary
+### 18. Sidecar Proxy Wired Backwards
 
-All AI-generated artifacts were reviewed for correctness, security, and production readiness. Key themes across the review:
+**Files:** `values.yaml`, `deployment.yaml`
 
-- **Security hardening:** Tightened permissions, restricted endpoint exposure, validated inputs, and ensured non-root execution.
-- **Configuration correctness:** Fixed API versions, added required fields, and corrected parameterization patterns.
-- **Production readiness:** Addressed scalability concerns, cost optimisation, and operational documentation gaps.
-- **Testing coverage:** Property-based tests and unit tests were written for all major components to validate correctness across diverse inputs.
-- **Supply chain integrity:** Image signing, SBOM attestation, Kyverno admission enforcement, and periodic re-scanning added layered trust verification beyond what the initial AI output provided.
-- **Infrastructure lifecycle:** Several critical failure modes were only observable after a full `terraform destroy + apply` cycle — including missing RBAC bindings, stale KMS public keys, and OIDC trust policy scope gaps. AI-generated infrastructure requires idempotency and fresh-state testing, not just incremental validation.
+---
 
-Each fix was verified through automated tests (JUnit 5 unit tests and jqwik property-based tests) and live EKS deployments before being committed.
+Easiest to understand, also kind of funny: AI wired the sidecar backwards.
+
+AI gave `TARGET_HOST: localhost, TARGET_PORT: 8080` — the sidecar would forward requests to the main app's port 8080. That's a reverse proxy (external traffic → app), not what we wanted: a forward proxy (app → external LLM).
+
+On top of that, even if the direction were right, the main app had no way to route LLM calls through the sidecar — `LLM_PROXY_URL` was never injected, so all traffic bypassed the sidecar entirely even when it was running.
+
+Also no health probes on the sidecar — it could crash silently with the pod still showing healthy.
+
+Fix: Changed env vars to `LISTEN_PORT: 8081, UPSTREAM_URL: https://api.openai.com` (sidecar listens on 8081 and forwards to OpenAI), injected `LLM_PROXY_URL=http://localhost:8081` into the main container, added health probes to the sidecar.
+
+---
+
+### 19. Swagger & CORS Integration Tests
+
+**Files:** `config/OpenAPIConfig.kt`, `config/CorsConfig.kt`, `templates/ingress.yaml`, `templates/basic-auth-secret.yaml`
+
+---
+
+Asked AI to set up Swagger UI, CORS config, and integration tests. Three non-obvious bugs.
+
+First: Kotlin compile error. Wrote `/api/v1/**` inside a KDoc comment. Kotlin parses `/**` as a nested comment opener — "Unclosed comment" compile error. Nothing to do with Swagger. Fixed by rewriting the path description to avoid the `/**` substring.
+
+Second: CORS misconfiguration. `allowCredentials = true` and `allowedOrigins = "*"` are mutually exclusive — both browsers and Spring reject this at runtime. AI generated a config with both enabled. Fix: when `CORS_ALLOWED_ORIGINS=*` (dev default), don't enable `allowCredentials`; when set to a specific origin, automatically drop the wildcard and enable credentials.
+
+Third: Swagger auth in the wrong layer. AI suggested Spring Security intercepting `/swagger-ui/**` at the app layer — requires code changes, new dependencies, image rebuild. Much cleaner to put it on the Ingress via nginx annotation: `auth-type: basic` + `basic-auth-secret.yaml`. Zero application code changes, zero redeploy needed.
+
+jqwik property tests also had a gotcha: `options()` clashed with `MockMvcRequestBuilders.options()` — had to use the fully qualified class name to resolve the ambiguity.
+
+---
+
+### 20. ECR Tag Strategy: Floating Tags vs IMMUTABLE
+
+**File:** `.github/workflows/ci-cd.yml`
+
+---
+
+AI suggested a "multi-dimensional tag strategy" that sounded reasonable but directly conflicted with ECR IMMUTABLE.
+
+The `docker/metadata-action` config AI generated included `type=semver,pattern={{major}}.{{minor}}` (floating minor), `type=semver,pattern={{major}}` (floating major), and `type=raw,value=latest`. All three need to overwrite an existing tag on every subsequent release. ECR IMMUTABLE prohibits overwriting any tag. Second push fails with `ImageAlreadyExistsException`.
+
+More importantly: Helm deploy never uses `latest`, `1.2`, or `1` for actual deployments — it uses exact `git-sha` or `X.Y.Z`. So these three tags add noise to the ECR image list and nothing else.
+
+Conclusion: ECR IMMUTABLE + two tag types only:
+- `git-<sha>`: generated for all events — unique, immutable, fully traceable
+- `X.Y.Z`: generated only on version tag push — exact semver, usable for Helm rollback
+
+Floating tags (`latest`, `X.Y`, `X`) only make sense with ECR MUTABLE mode. And MUTABLE is not a production best practice.
+
+> **Verified state:** Main image tag is `git-b9893e1` ✅. However, `sidecar.image.tag` is still `latest` in the current Helm release values — the tag policy fix was applied to the CI and main image but the sidecar value was missed. Sidecar is currently `enabled: false`, so it's not active, but the value should be corrected before re-enabling.
+
+---
+
+### 21. Documentation Drift
+
+**Files:** `devops/docs/DEPLOYMENT.md`, `devops/docs/QUICKSTART.md`, `devops/docs/README.md`
+
+---
+
+Asked AI to generate operational docs. Complete, well-formatted, three critical mismatches with actual implementation.
+
+First: `DEPLOYMENT.md` described the rolling update strategy as `maxSurge=1, maxUnavailable=0`. Correct on paper — start new pod first, then kill old one, zero downtime. But Chapter 14 is literally the story of how that config deadlocked upgrades on t3.small nodes. t3.small has an 11-pod ENI limit. `maxSurge=1` tries to schedule a new pod on an already-full node — stays Pending forever. AI wrote docs to standard best practice, unaware of the node constraint. Correct config is `maxSurge=0, maxUnavailable=1`.
+
+Second: `QUICKSTART.md` had `./deploy.sh dev --tag latest`. Chapter 20 just covered why we removed `latest` from the tag strategy — ECR IMMUTABLE means once `latest` is pushed it can never be overwritten. That command in a getting-started doc would confuse or break anyone following it. Updated to `git-$(git rev-parse --short HEAD)` to match what CI actually produces.
+
+Third: `README.md` listed 4 documents (`DEPLOYMENT.md`, `QUICKSTART.md`, `GITHUB-OIDC-SETUP.md`, `SECRETS-MANAGEMENT.md`). The actual directory had 9 files. Five real docs were missing from the index. Two listed files didn't exist at all (`GITHUB-OIDC-SETUP.md`, `SECRETS-MANAGEMENT.md`). AI assembled a plausible-looking doc list from common patterns, not from an actual directory listing.
+
+Pattern: AI docs are accurate at creation time and drift from the implementation over time. The two highest-risk fields are **default values** (likely overridden in env-specific values files) and **CLI commands** (tags, namespaces, and paths all change as code evolves but docs lag behind).
+
+---
+
+### 22. New Doc + New Code Agreed, But Both Violated an Earlier Constraint
+
+**Files:** `devops/docs/RELEASE_PROCESS.md`, `.github/workflows/ci-cd.yml`
+
+---
+
+What makes this gotcha unusual: the AI-generated doc and the AI-modified code were consistent with each other — the problem was that both violated an earlier-established constraint.
+
+At the start of this session, four sources described the ECR tag strategy:
+
+| Source | Content |
+|---|---|
+| `MEMORY.md` | `git-sha` / semver / `pr-N`; IMMUTABLE; no floating tags |
+| `RELEASE_PROCESS.md` (newly created) | `X.Y.Z` + `X.Y` (minor) + `X` (major) + `git-sha` |
+| `ci-cd.yml` (modified) | `docker/metadata-action` with `pattern={{major}}.{{minor}}`, `pattern={{major}}`, `value=latest` |
+| ECR repository | IMMUTABLE tag policy |
+
+`RELEASE_PROCESS.md` was a brand-new document describing the "improved multi-dimensional tag strategy." `ci-cd.yml` was also updated to implement that strategy. The doc and the code **agreed with each other** — the change was internally self-consistent.
+
+But both violated a constraint established months earlier: **ECR IMMUTABLE**. Floating tags (`X.Y`, `X`, `latest`) need to overwrite existing tags on every release. IMMUTABLE prevents that. Second push throws `ImageAlreadyExistsException`. CI breaks.
+
+Root cause: AI focused on "what does this feature do" (multi-level tags) without tracing back to "what constraints does the runtime environment have" (ECR IMMUTABLE was set up months ago). The doc/code consistency was local; the global consistency with the full system was broken.
+
+How to catch this class of bug: after adding any new feature, ask "what **already-existing** constraints could this conflict with?" In this project, the common constraint sources are: ECR config, K8s node spec, IAM permission boundaries, and Kyverno policies.
+
+---
+
+## Wrap-Up
+
+Honest take: AI was genuinely useful here — generating first drafts, scaffolding, templates — much faster than writing from scratch. But every one of these 22 chapters is a real bug we hit, mostly because:
+
+- AI doesn't know your specific constraints (t3.small pod limits, multi-repo OIDC, KMS key lifecycle)
+- AI-generated configs pass the "first run" check but blow up in fresh environments or edge cases
+- You need to understand every line it gives you, not just copy-paste and ship
+
+The scariest ones are the "invisible until it's too late" bugs: missing RBAC only shows up on a fresh cluster rebuild, KMS key change only bites you after the next destroy, sidecar wired backwards but the pod looks healthy. Code review won't catch these — only actually running the thing will.
+
+Chapter 22 adds another pattern: fixing one thing while missing another. The main image tag was fixed to `git-sha` but `sidecar.image.tag` was left as `latest`. `maxSurge` was set to `0` for single-node and never updated after adding a second app node. Node groups were separated but Kyverno and cert-manager weren't pinned to the system node — they still run on SPOT. **A partial fix is not a global fix.** Periodic live state verification (`kubectl get` + `helm get values`) is more reliable than reading the docs.

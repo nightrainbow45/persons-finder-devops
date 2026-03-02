@@ -1,4 +1,4 @@
-# Requirement 6: AI/LLM Integration
+# 10. AI/LLM Integration
 
 > **Requirement:** Integrate an LLM or AI service into the application. The AI component must do something meaningful (not just a hello-world call). Bonus: privacy-preserving proxy, prompt engineering, or fine-tuning.
 

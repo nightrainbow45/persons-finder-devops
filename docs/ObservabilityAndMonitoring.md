@@ -1,4 +1,4 @@
-# Requirement 5: Observability & Monitoring
+# 9. Observability & Monitoring
 
 > **Requirement:** Add basic observability — application logs, a health check endpoint, and at least one metric or alert. Bonus: structured logging, log aggregation pipeline.
 

@@ -1,0 +1,287 @@
+# Production Configuration for Persons Finder API
+# This file contains recommended security settings for production deployment
+# 
+# Usage:
+#   helm upgrade persons-finder ./devops/helm/persons-finder \
+#     -f devops/helm/persons-finder/production-values.yaml \
+#     --namespace production
+
+# ============================================================================
+# REQUIRED: Update these values before deploying to production
+# ============================================================================
+
+# Image Configuration
+# IMPORTANT: Use specific version tags, not "latest"
+image:
+  repository: 190239490233.dkr.ecr.ap-southeast-2.amazonaws.com/persons-finder
+  pullPolicy: IfNotPresent
+  tag: "git-b9893e1"  # TODO: Update with actual version
+
+# Replica Configuration
+# Production should have at least 3 replicas for high availability
+replicaCount: 3
+
+# ============================================================================
+# Swagger/OpenAPI Security Configuration
+# ============================================================================
+
+swagger:
+  enabled: true
+  title: "Persons Finder API"
+  version: "1.0.0"
+  description: "REST API for managing persons and their locations"
+
+  # Basic Authentication for Swagger UI
+  # REQUIRED: Generate password before deploying
+  basicAuth:
+    enabled: true
+    username: admin
+    # TODO: Generate password with: htpasswd -nbB admin YourStrongPassword123!
+    # Use the entire output (admin:$2y$05$...) as the password value
+    password: ""  # REQUIRED: Set this value before deploying
+
+    # Password Requirements:
+    # - Minimum 12 characters
+    # - Mix of uppercase, lowercase, numbers, and special characters
+    # - Avoid common words or patterns
+    # - Rotate every 90 days
+
+# ============================================================================
+# CORS Configuration
+# ============================================================================
+
+cors:
+  # REQUIRED: Replace with actual domain(s)
+  # Use comma-separated list for multiple domains
+  # Example: "https://aifindy.digico.cloud,https://app.example.com"
+  allowedOrigins: "https://aifindy.digico.cloud"  # TODO: Update with actual domain(s)
+
+  # Security Note:
+  # - NEVER use "*" in production
+  # - Only include trusted domains
+  # - Use HTTPS URLs only
+
+# ============================================================================
+# Ingress Configuration
+# ============================================================================
+
+ingress:
+  enabled: true
+  className: "nginx"
+
+  annotations:
+    # TLS/HTTPS Configuration
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+    # Security Headers
+    nginx.ingress.kubernetes.io/enable-cors: "false"  # CORS handled by application
+    nginx.ingress.kubernetes.io/ssl-protocols: "TLSv1.2 TLSv1.3"
+    nginx.ingress.kubernetes.io/ssl-ciphers: "HIGH:!aNULL:!MD5"
+
+    # Rate Limiting (optional but recommended)
+    # nginx.ingress.kubernetes.io/limit-rps: "100"
+    # nginx.ingress.kubernetes.io/limit-connections: "10"
+
+  hosts:
+    - host: aifindy.digico.cloud  # TODO: Update with actual domain
+      paths:
+        - path: /
+          pathType: Prefix
+
+  # TLS Configuration
+  # REQUIRED: Update with actual domain
+  tls:
+    - secretName: persons-finder-tls
+      hosts:
+        - aifindy.digico.cloud  # TODO: Update with actual domain
+
+  # IP Whitelist (optional but recommended)
+  # Restrict access to specific IP ranges (e.g., corporate network, VPN)
+  # Example: "203.0.113.0/24,198.51.100.0/24"
+  ipWhitelist: ""  # OPTIONAL: Set if you want to restrict access by IP
+
+  # cert-manager Configuration
+  certManager:
+    clusterIssuer: "letsencrypt-prod"
+
+# ============================================================================
+# Resource Limits
+# ============================================================================
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+# ============================================================================
+# Autoscaling Configuration
+# ============================================================================
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  stabilizationWindowSeconds: 300
+
+# ============================================================================
+# Health Check Configuration
+# ============================================================================
+
+probes:
+  liveness:
+    httpGet:
+      path: /actuator/health
+      port: 8080
+    initialDelaySeconds: 60
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    httpGet:
+      path: /actuator/health
+      port: 8080
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# ============================================================================
+# Security Context
+# ============================================================================
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: false
+
+# ============================================================================
+# Service Configuration
+# ============================================================================
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+  annotations: {}
+
+# ============================================================================
+# Application Secrets
+# ============================================================================
+
+secrets:
+  create: true
+  # REQUIRED: Set OpenAI API key if using LLM features
+  # OPENAI_API_KEY: ""  # TODO: Set this value or use external secrets
+
+# ============================================================================
+# Network Policy (Recommended for Production)
+# ============================================================================
+
+networkPolicy:
+  enabled: true
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic from Ingress controller only
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            name: ingress-nginx
+  egress:
+    # DNS: allow UDP/TCP 53 to kube-dns pods in any namespace
+    - to:
+      - namespaceSelector: {}
+      ports:
+      - protocol: UDP
+        port: 53
+      - protocol: TCP
+        port: 53
+    # Internal: allow all traffic to pods in the same namespace
+    - to:
+      - podSelector: {}
+    # External HTTPS: allow TCP 443 to public IPs only
+    # Covers: api.openai.com, ECR, STS (IRSA), EKS control plane endpoint
+    - to:
+      - ipBlock:
+          cidr: 0.0.0.0/0
+          except:
+            - 10.0.0.0/8
+            - 172.16.0.0/12
+            - 192.168.0.0/16
+      ports:
+      - protocol: TCP
+        port: 443
+
+# ============================================================================
+# PII Redaction Sidecar (Optional)
+# ============================================================================
+
+sidecar:
+  enabled: false
+  upstreamUrl: "https://api.openai.com"
+  image:
+    repository: 190239490233.dkr.ecr.ap-southeast-2.amazonaws.com/pii-redaction-sidecar
+    tag: "latest"
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  port: 8081
+
+# ============================================================================
+# RBAC
+# ============================================================================
+
+rbac:
+  create: true
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# ============================================================================
+# Additional Configuration
+# ============================================================================
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ============================================================================
+# Pre-Deployment Checklist
+# ============================================================================
+#
+# Before deploying to production, ensure you have:
+#
+# [ ] Updated image.tag with specific version (not "latest")
+# [ ] Generated and set swagger.basicAuth.password
+# [ ] Updated cors.allowedOrigins with actual domain(s)
+# [ ] Updated ingress.hosts with actual domain
+# [ ] Updated ingress.tls with actual domain
+# [ ] Configured DNS to point to Ingress LoadBalancer
+# [ ] Verified cert-manager is installed and configured
+# [ ] Set secrets.OPENAI_API_KEY (if using LLM features)
+# [ ] Reviewed and adjusted resource limits
+# [ ] Reviewed and adjusted autoscaling settings
+# [ ] Considered enabling ingress.ipWhitelist
+# [ ] Tested configuration in staging environment first
+#
+# ============================================================================

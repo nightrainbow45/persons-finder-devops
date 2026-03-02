@@ -39,24 +39,32 @@ Spring Boot 应用遵循严格三层架构，代码位于 `src/main/kotlin/com/p
 A privacy-by-default proxy pipeline that intercepts all outbound LLM calls:
 默认隐私保护的代理管道，拦截所有发往 LLM 的出站请求：
 
-1. **`PiiDetector`** — Regex patterns identify names, coordinates, and other PII / 正则表达式识别人名、坐标等个人身份信息
+1. **`PiiDetector`** — Regex patterns identify names and coordinates / 正则表达式识别人名、坐标
 2. **`PiiRedactor`** — Replaces PII with reversible UUID tokens (`<NAME_xxxxx>`, `<COORD_xxxxx>`) / 将 PII 替换为可逆 UUID 令牌
 3. **`PiiProxyService`** — HTTP proxy that redacts requests before forwarding to external LLM APIs, then de-tokenizes responses / HTTP 代理，转发前脱敏请求，收到响应后还原令牌
-4. **`AuditLogger`** — Writes JSON-structured audit log entries to stdout (for CloudWatch/ELK collection) / 将 JSON 结构化审计日志写入 stdout，供 CloudWatch/ELK 采集
+4. **`AuditLogger`** — Writes single-line JSON audit log entries to stdout (`{"type":"PII_AUDIT",...}`) collected by Fluent Bit → CloudWatch / 将单行 JSON 审计日志写入 stdout，由 Fluent Bit 采集发往 CloudWatch
 
 The tokenization map lives in memory per-request, making redaction reversible within a single proxy transaction.
 令牌映射表存储于每次请求的内存中，使脱敏在单次代理事务内可逆。
+
+There is also a **Go sidecar** (`pii-redaction-sidecar`) running in the same pod on port 8081. It mirrors the Kotlin regex patterns and provides a second independent PII enforcement layer. Enabled only in prod via `sidecar.enabled: true` in `values-prod.yaml`.
+Go sidecar（`pii-redaction-sidecar`）运行在同一 Pod 的 8081 端口，镜像 Kotlin 正则模式，提供第二道独立 PII 过滤层，仅在生产环境通过 `sidecar.enabled: true` 启用。
 
 ### DevOps Infrastructure / DevOps 基础设施 (`devops/`)
 
 | Directory / 目录 | Contents / 内容 |
 |---|---|
-| `devops/docker/` | Multi-stage Dockerfile: `gradle:7.6-jdk11` (build) → `eclipse-temurin:11-jre-alpine` (runtime) / 多阶段 Dockerfile：构建阶段 → 轻量运行时镜像 |
-| `devops/helm/persons-finder/` | Helm Chart with `values.yaml`, `values-dev.yaml`, `values-prod.yaml` / Helm Chart 及三套环境参数文件 |
-| `devops/helm/persons-finder/templates/` | All K8s resource templates (Deployment, Service, Ingress, HPA, Secret, RBAC) / 所有 K8s 资源模板 |
-| `devops/terraform/modules/` | Reusable modules: `iam/`, `vpc/`, `eks/`, `ecr/`, `secrets-manager/` / 可复用 Terraform 模块 |
-| `devops/terraform/environments/` | `dev/` and `prod/` environment compositions / 开发与生产环境组合配置 |
+| `devops/docker/` | Two Dockerfiles: `Dockerfile` (gradle:7.6.4-jdk11-focal → eclipse-temurin:11.0.26_4-jre-alpine) · `Dockerfile.sidecar` (golang:1.25-alpine3.21 → alpine:3.21, non-root) / 两个多阶段镜像构建文件 |
+| `devops/helm/persons-finder/` | Helm Chart: `values.yaml` (defaults) · `values-dev.yaml` · `values-prod.yaml` (sidecar on, networkpolicy on, HPA on) / Helm Chart 及三套环境参数文件 |
+| `devops/helm/persons-finder/templates/` | K8s resource templates: Deployment, Service, Ingress (nginx, Basic Auth), HPA, Secret, NetworkPolicy, RBAC, ServiceAccount, basic-auth-secret / 所有 K8s 资源模板 |
+| `devops/terraform/modules/` | Reusable modules: `iam/` · `vpc/` · `eks/` · `ecr/` (+ cosign KMS key) · `secrets-manager/` / 可复用 Terraform 模块 |
+| `devops/terraform/environments/prod/` | Prod composition: modules + OIDC provider + Kyverno IRSA role + sidecar ECR policy + cosign KMS policy + `cloudwatch.tf` (log group, metric filters, alarm) / 生产环境组合配置及 Layer 4 可观测性 |
+| `devops/terraform/environments/dev/` | Dev composition: modules only (no cloudwatch/Kyverno/cosign) / 开发环境组合配置 |
+| `devops/k8s/` | One-time manifests: `cluster-secret-store.yaml` (ESO) · `external-secret.yaml` (syncs OPENAI_API_KEY) · `fluent-bit.yaml` (DaemonSet → CloudWatch) / 一次性应用的 K8s 清单 |
+| `devops/kyverno/` | `verify-image-signatures.yaml` — ClusterPolicy Enforce: blocks pods with unsigned images / Kyverno 签名强制策略 |
+| `devops/scripts/` | `verify.sh` (17-check health script) · `deploy.sh` · `setup-eks.sh` · `teardown-eks.sh` · `local-test.sh` / 运维脚本 |
 | `devops/ci/ci-cd.yml` | Source for `.github/workflows/ci-cd.yml` / CI/CD 流水线源文件 |
+| `devops/docs/` | Operational guides: DEPLOYMENT, QUICKSTART, RELEASE_PROCESS, HELM_DEPLOYMENT, DNS_CONFIGURATION, SECURITY_REVIEW, SWAGGER_TROUBLESHOOTING, NETWORK_SECURITY_VERIFICATION / 运维文档 |
 
 ### Test Categories / 测试类别
 
@@ -73,10 +81,9 @@ Tests live in `src/test/kotlin/com/persons/finder/` and split into two distinct 
 - These are unit tests with no external dependencies / 纯单元测试，无任何外部依赖
 
 **`config/` — OpenAPI/CORS Spring integration tests / OpenAPI 与 CORS 集成测试** (requires running app via `@SpringBootTest` / 需要启动完整 Spring 上下文)
-- `OpenAPISpecificationTest` — verifies `/v3/api-docs` returns all expected paths and schemas
-- `OpenAPISpecificationPropertiesTest` — 8 property-based tests (100+ iterations each): spec completeness, parameter docs, request body schemas, CORS headers, Swagger UI accessibility, health check isolation
-- `CorsConfigurationTest`, `SwaggerUIAccessibilityTest`, `ModelExamplesTest`, `HealthCheckIsolationTest` — focused integration tests
-- **Gotcha:** doc comments must not contain `/**` as a substring (Kotlin treats it as a nested comment opener) / Kotlin 文档注释中不能包含 `/**` 子序列（会被解析为嵌套注释）
+- 7 test classes: `OpenAPISpecificationTest`, `OpenAPISpecificationPropertiesTest`, `CorsConfigurationTest`, `SwaggerUIAccessibilityTest`, `ModelExamplesTest`, `HealthCheckIsolationTest`, `EnvironmentConfigTest`
+- `OpenAPISpecificationPropertiesTest` — 9 `@Test` methods (Property 1–8, Property 11) using jqwik `Arbitrary` generators for input variation; validates spec completeness, parameter docs, request body schemas, CORS headers, Swagger UI accessibility, health check isolation, model examples
+- **Gotcha:** doc comments must not contain `/**` as a substring (Kotlin treats it as a nested comment opener) / Kotlin 文档注释中不能包含 `/**` 子序列（会被解析为嵌套注释导致编译错误）
 
 ### Key Helm Chart Defaults / Helm Chart 关键默认值
 
@@ -84,24 +91,51 @@ The sidecar and network policy are **disabled by default** in `values.yaml` and 
 
 Sidecar 容器和 NetworkPolicy 在 `values.yaml` 中**默认禁用**，仅在 `values-prod.yaml` 中启用。主应用容器始终通过 `envFrom.secretRef` 从 K8s Secret 读取 `OPENAI_API_KEY`。ECR 镜像仓库指向 `ap-southeast-2` 区域。
 
-**Swagger/OpenAPI:** controlled by `swagger.enabled` (default `true`). Title/version/description read from `swagger.title`, `swagger.version`, `swagger.description` in `application.properties` or Helm `values.yaml`. Live UI at `/swagger-ui/index.html`, spec at `/v3/api-docs`. Set `SWAGGER_ENABLED=false` to disable in prod if needed.
+**Swagger/OpenAPI:** controlled by `swagger.enabled` (default `true`). Title/version/description read from `swagger.title`, `swagger.version`, `swagger.description` in `application.properties` or Helm `values.yaml`. Live UI at `/swagger-ui/index.html`, spec at `/v3/api-docs`. In prod, the Swagger UI is protected by Ingress Basic Auth (nginx annotation `auth-type: basic`, secret in `basic-auth-secret.yaml`).
 
-**CORS:** `cors.allowed-origins` (default `*`). In prod set via env var `CORS_ALLOWED_ORIGINS=https://your-domain.com` — this enables `allowCredentials` and disables the wildcard.
+**Swagger / OpenAPI：** 由 `swagger.enabled` 控制（默认 `true`）。标题/版本/描述从 `swagger.*` 属性读取。Swagger UI 地址 `/swagger-ui/index.html`，规范地址 `/v3/api-docs`。生产环境 Swagger UI 由 Ingress Basic Auth 保护（nginx `auth-type: basic`）。
 
-**Swagger / OpenAPI：** 由 `swagger.enabled` 控制（默认 `true`）。标题/版本/描述从 `swagger.*` 属性读取。Swagger UI 地址 `/swagger-ui/index.html`，规范地址 `/v3/api-docs`。
+**CORS:** `cors.allowed-origins` (default `*`). In prod, set to `https://aifindy.digico.cloud` — this enables `allowCredentials` and disables the wildcard. **Important:** `allowCredentials=true` and `allowedOrigins="*"` are mutually exclusive; Spring throws an exception if both are set.
 
-**CORS：** `cors.allowed-origins` 控制跨域（默认 `*`）。生产环境通过环境变量 `CORS_ALLOWED_ORIGINS` 设置具体域名，此时自动关闭通配符并开启 `allowCredentials`。
+**CORS：** `cors.allowed-origins` 控制跨域（默认 `*`）。生产环境设为 `https://aifindy.digico.cloud`，此时自动关闭通配符并开启 `allowCredentials`。注意两者互斥，同时设置会抛出异常。
 
 ### CI/CD Pipeline Logic / CI/CD 流水线逻辑
 
-The GitHub Actions workflow (`.github/workflows/ci-cd.yml`) only pushes to ECR when both conditions are true: event is `push` AND ref is `refs/heads/main`. Security scanning with Trivy runs on every build and fails the pipeline on `CRITICAL` or `HIGH` severity findings. AWS authentication uses OIDC (no stored credentials) with role `github-actions-role`.
+The GitHub Actions workflow (`.github/workflows/ci-cd.yml`) runs three jobs: **Build and Test** → **Docker Build and Security Scan** → **Deploy to EKS** (push-to-main only).
+GitHub Actions 工作流三个 Job：构建测试 → Docker 构建+安全扫描 → 部署到 EKS（仅 main 分支推送触发）。
 
-GitHub Actions 工作流（`.github/workflows/ci-cd.yml`）仅在同时满足两个条件时才推送镜像到 ECR：事件为 `push` 且 ref 为 `refs/heads/main`。每次构建都运行 Trivy 安全扫描，发现 `CRITICAL` 或 `HIGH` 级别漏洞时流水线失败。AWS 认证使用 OIDC（无需存储凭证），IAM 角色名为 `github-actions-role`。
+**Image tag strategy (ECR is IMMUTABLE — tags cannot be overwritten):**
+- `git-<sha>` — every push to `main` (e.g. `git-a1b2c3d`)
+- `X.Y.Z` semver — release tags `v*.*.*` (e.g. `1.4.2`)
+- `pr-N` — pull request builds only
+- No floating tags (`latest`, `X.Y`, `X`) — incompatible with ECR IMMUTABLE
+
+**镜像标签策略（ECR IMMUTABLE — 标签不可覆盖）：**
+- `git-<sha>`：main 分支每次推送
+- `X.Y.Z` semver：release tag 触发
+- `pr-N`：PR 构建
+- 无浮动标签（latest、X.Y、X）——与 ECR IMMUTABLE 不兼容
+
+**Security pipeline (runs on every build, gates before ECR push):**
+1. Trivy scans main image — fails on unfixed CRITICAL/HIGH CVEs (`--exit-code 1`)
+2. Trivy scans sidecar image — same gate
+3. SBOM generated (CycloneDX format, uploaded as GitHub artifact, 90-day retention)
+4. Image pushed to ECR (only if both Trivy gates pass, push to main/tags only)
+5. cosign signs image with AWS KMS key (`alias/persons-finder-cosign-prod`, ECC_NIST_P256)
+6. cosign attests SBOM provenance to ECR
+
+**Kyverno ClusterPolicy** (`devops/kyverno/verify-image-signatures.yaml`) runs in `Enforce` mode — any pod in `default` namespace using an unsigned image is blocked at admission, even if it bypasses CI entirely.
+
+AWS authentication uses OIDC (no stored credentials), role `github-actions-role`.
 
 ### Secret Management / 密钥管理
 
-The `OPENAI_API_KEY` must be created manually before deploying:
-`OPENAI_API_KEY` 必须在部署前手动创建：
+**Production (ESO — primary method):** External Secrets Operator syncs `OPENAI_API_KEY` automatically from AWS Secrets Manager (`persons-finder/prod/secrets`) into the `persons-finder-secrets` K8s Secret. The ESO `ClusterSecretStore` and `ExternalSecret` are in `devops/k8s/`.
+
+**生产环境（ESO 主方式）：** External Secrets Operator 自动从 AWS Secrets Manager 同步 `OPENAI_API_KEY` 到 K8s Secret `persons-finder-secrets`，配置文件在 `devops/k8s/`。
+
+**Fallback (manual):** If ESO is not installed, create the secret manually:
+**回退（手动）：** ESO 未安装时手动创建：
 
 ```bash
 kubectl create secret generic persons-finder-secrets \

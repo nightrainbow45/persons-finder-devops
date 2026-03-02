@@ -13,12 +13,10 @@ metadata:
     cert-manager.io/cluster-issuer: {{ .Values.ingress.certManager.clusterIssuer | default "letsencrypt-prod" }}
     {{- end }}
     {{- if .Values.swagger.basicAuth.enabled }}
-    # Path-level basic authentication for Swagger UI only
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      location ~ ^/(swagger-ui|v3/api-docs) {
-        auth_basic "Authentication Required";
-        auth_basic_user_file /etc/nginx/secrets/{{ include "persons-finder.fullname" . }}-basic-auth;
-      }
+    # Basic authentication for entire Ingress
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: {{ include "persons-finder.fullname" . }}-basic-auth
+    nginx.ingress.kubernetes.io/auth-realm: "Authentication Required"
     {{- end }}
     {{- if .Values.ingress.ipWhitelist }}
     nginx.ingress.kubernetes.io/whitelist-source-range: {{ .Values.ingress.ipWhitelist }}
