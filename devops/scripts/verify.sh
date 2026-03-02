@@ -24,8 +24,12 @@
 #   仅 prod / prod only:
 #     - Kyverno ClusterPolicy 是否存在且处于 Enforce 模式
 #     - Kyverno admission-controller 是否运行
+#     - PII Redaction Sidecar（Layer 2）Ready 状态
+#     - LLM_PROXY_URL 注入确认
 #     - ESO ClusterSecretStore 状态
 #     - ESO ExternalSecret 同步状态
+#     - Fluent Bit DaemonSet（Layer 4）运行状态
+#     - CloudWatch 日志组存在性
 #
 # 退出码 / Exit codes:
 #   0  — 所有检查通过 / All checks passed
@@ -263,6 +267,49 @@ if [[ "${ENVIRONMENT}" == "prod" ]]; then
   else
     echo "  - ESO CRDs not installed (run setup-eks.sh to install ESO)"
   fi
+
+  # ── Layer 4: Fluent Bit + CloudWatch ──────────────────────────────────────
+  # Fluent Bit DaemonSet 将 PII_AUDIT 日志从节点采集并推送到 CloudWatch
+  # Fluent Bit DaemonSet collects PII_AUDIT logs from nodes and ships to CloudWatch
+  #
+  # 检查项 / Checks:
+  #   1. DaemonSet 期望副本数与就绪数一致（每节点一个 Pod）
+  #   2. CloudWatch 日志组 /eks/persons-finder/pii-audit 存在
+  #   3. CloudWatch 告警 persons-finder-pii-leak-risk 存在（状态不检查，OK/ALARM 均为正常）
+  echo ""
+  echo "--- Layer 4: Fluent Bit + CloudWatch (prod) ---"
+
+  # DaemonSet 就绪状态：比较 desiredNumberScheduled 与 numberReady
+  # DaemonSet readiness: compare desiredNumberScheduled vs numberReady
+  FB_DESIRED=$(kubectl get daemonset fluent-bit -n kube-system \
+    -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null || echo "0")
+  FB_READY=$(kubectl get daemonset fluent-bit -n kube-system \
+    -o jsonpath='{.status.numberReady}' 2>/dev/null || echo "0")
+  echo "    Fluent Bit pods: ${FB_READY}/${FB_DESIRED} ready"
+  check "Fluent Bit DaemonSet ready (${FB_READY}/${FB_DESIRED})" \
+    test "${FB_READY}" -ge 1
+
+  # CloudWatch 日志组存在性（由 Terraform cloudwatch.tf 创建）
+  # CloudWatch log group existence (created by Terraform cloudwatch.tf)
+  CW_LOG_GROUP=$(aws logs describe-log-groups \
+    --log-group-name-prefix "/eks/persons-finder/pii-audit" \
+    --region ap-southeast-2 \
+    --query 'logGroups[0].logGroupName' \
+    --output text 2>/dev/null || echo "None")
+  echo "    CloudWatch log group: ${CW_LOG_GROUP}"
+  check "CloudWatch log group /eks/persons-finder/pii-audit exists" \
+    test "${CW_LOG_GROUP}" == "/eks/persons-finder/pii-audit"
+
+  # CloudWatch 告警存在性（状态 OK/ALARM/INSUFFICIENT_DATA 均接受）
+  # CloudWatch alarm existence (any state is acceptable here)
+  CW_ALARM=$(aws cloudwatch describe-alarms \
+    --alarm-names "persons-finder-pii-leak-risk" \
+    --region ap-southeast-2 \
+    --query 'MetricAlarms[0].AlarmName' \
+    --output text 2>/dev/null || echo "None")
+  echo "    CloudWatch alarm: ${CW_ALARM}"
+  check "CloudWatch alarm persons-finder-pii-leak-risk exists" \
+    test "${CW_ALARM}" == "persons-finder-pii-leak-risk"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════

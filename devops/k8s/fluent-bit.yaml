@@ -1,0 +1,248 @@
+# Fluent Bit DaemonSet — Layer 4 AI Firewall 日志采集
+# Fluent Bit DaemonSet — Layer 4 AI Firewall log collection
+#
+# 职责 / Responsibilities:
+#   1. 从节点 /var/log/containers/ 读取 persons-finder pod 的 stdout 日志
+#      Read persons-finder pod stdout logs from node /var/log/containers/
+#   2. 过滤出 PII_AUDIT 类型的 JSON 日志条目
+#      Filter for PII_AUDIT type JSON log entries
+#   3. 发送到 CloudWatch Logs: /eks/persons-finder/pii-audit
+#      Ship to CloudWatch Logs: /eks/persons-finder/pii-audit
+#
+# IAM 权限 / IAM permissions:
+#   Fluent Bit 使用 EC2 节点 IAM role（通过 IMDS），权限在 Terraform cloudwatch.tf 中授予。
+#   Fluent Bit uses the EC2 node IAM role (via IMDS). Permissions granted in cloudwatch.tf.
+
+---
+# --- RBAC: ServiceAccount + ClusterRole + ClusterRoleBinding ---
+# Fluent Bit 需要读取 Pod 和 Namespace 信息（用于日志元数据富化）
+# Fluent Bit needs to read Pod and Namespace info (for log metadata enrichment)
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fluent-bit
+  namespace: kube-system
+  labels:
+    app: fluent-bit
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fluent-bit
+rules:
+- apiGroups: [""]
+  resources: ["pods", "namespaces", "nodes"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fluent-bit
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fluent-bit
+subjects:
+- kind: ServiceAccount
+  name: fluent-bit
+  namespace: kube-system
+
+---
+# --- ConfigMap: Fluent Bit 配置 / Fluent Bit Configuration ---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-config
+  namespace: kube-system
+  labels:
+    app: fluent-bit
+data:
+  # 主配置文件 / Main configuration file
+  fluent-bit.conf: |
+    [SERVICE]
+        # 每 5 秒刷新一次输出缓冲区
+        # Flush output buffer every 5 seconds
+        Flush        5
+        # 守护进程模式（容器内保持前台运行）
+        # Daemon mode off (container stays in foreground)
+        Daemon       Off
+        Log_Level    info
+        # 解析器定义文件（JSON 解析）
+        # Parser definitions for JSON log format
+        Parsers_File parsers.conf
+        HTTP_Server  Off
+
+    # 输入：读取 persons-finder 容器的 stdout 日志
+    # Input: tail stdout logs from persons-finder containers
+    [INPUT]
+        Name              tail
+        # 只跟踪 persons-finder pod 的日志（含 sidecar 容器）
+        # Only track persons-finder pod logs (includes sidecar container)
+        Path              /var/log/containers/persons-finder-*.log
+        # 使用 docker JSON 解析器（EKS 节点日志格式为 docker JSON）
+        # Use docker JSON parser (EKS node log format is docker JSON)
+        Parser            docker
+        # 标签用于后续 FILTER 和 OUTPUT 的路由
+        # Tag used for routing in FILTER and OUTPUT
+        Tag               pii.audit.*
+        # 记录读取位置，重启后不重复读（存放在 emptyDir，避免写只读 /var/log）
+        # Remember read position to avoid re-reading on restart (stored in emptyDir, not read-only /var/log)
+        DB                /fluent-bit/state/flb_pii_audit.db
+        Mem_Buf_Limit     5MB
+        Skip_Long_Lines   On
+        Refresh_Interval  10
+
+    # 过滤器 1：只保留包含 "PII_AUDIT" 的行
+    # Filter 1: Keep only lines containing "PII_AUDIT"
+    [FILTER]
+        Name    grep
+        Match   pii.audit.*
+        # AuditLogger 输出格式：{"type":"PII_AUDIT",...}
+        # AuditLogger output: {"type":"PII_AUDIT",...}
+        Regex   log PII_AUDIT
+
+    # 过滤器 2：将 log 字段内的 JSON 字符串解析为结构化字段
+    # Filter 2: Parse the JSON string in the "log" field into structured fields
+    [FILTER]
+        Name         parser
+        Match        pii.audit.*
+        Key_Name     log
+        Parser       pii_audit_json
+        Reserve_Data On
+
+    # 输出：发送到 CloudWatch Logs
+    # Output: send to CloudWatch Logs
+    [OUTPUT]
+        Name              cloudwatch_logs
+        Match             pii.audit.*
+        region            ap-southeast-2
+        log_group_name    /eks/persons-finder/pii-audit
+        # 每个 pod 使用独立的日志流，方便按实例查询
+        # Each pod gets its own log stream for per-instance queries
+        log_stream_prefix pii-
+        # 日志组已由 Terraform 预先创建，Fluent Bit 无需创建权限
+        # Log group pre-created by Terraform; Fluent Bit does not need CreateLogGroup
+        auto_create_group false
+        # 使用 EC2 IMDS 获取 IAM 凭证（hop limit=2 已在 Terraform 中配置）
+        # Use EC2 IMDS for IAM credentials (hop limit=2 configured in Terraform)
+
+  # 解析器配置：用于解析 AuditLogger 输出的 JSON
+  # Parser config: parse AuditLogger JSON output
+  parsers.conf: |
+    # Docker 日志格式解析器（EKS 节点标准格式）
+    # Docker log format parser (standard EKS node format)
+    [PARSER]
+        Name        docker
+        Format      json
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%LZ
+
+    # PII 审计日志 JSON 解析器
+    # PII audit log JSON parser
+    [PARSER]
+        Name        pii_audit_json
+        Format      json
+        Time_Key    timestamp
+        Time_Format %Y-%m-%dT%H:%M:%SZ
+
+---
+# --- DaemonSet: 每个节点部署一个 Fluent Bit pod ---
+# --- DaemonSet: one Fluent Bit pod per node ---
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluent-bit
+  namespace: kube-system
+  labels:
+    app: fluent-bit
+    version: v4
+    kubernetes.io/cluster-service: "true"
+spec:
+  selector:
+    matchLabels:
+      app: fluent-bit
+  template:
+    metadata:
+      labels:
+        app: fluent-bit
+        version: v4
+    spec:
+      serviceAccountName: fluent-bit
+
+      # 容忍所有 taint，确保在系统节点上运行
+      # Tolerate all taints so Fluent Bit runs on system nodes too
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      - operator: "Exists"
+        effect: "NoExecute"
+      - operator: "Exists"
+        effect: "NoSchedule"
+
+      containers:
+      - name: fluent-bit
+        # AWS 官方 Fluent Bit 镜像，包含 CloudWatch Logs 输出插件
+        # AWS official Fluent Bit image with CloudWatch Logs output plugin included
+        image: public.ecr.aws/aws-observability/aws-for-fluent-bit:stable
+        imagePullPolicy: IfNotPresent
+
+        resources:
+          # Fluent Bit 非常轻量，限制在合理范围内
+          # Fluent Bit is very lightweight; keep limits conservative
+          limits:
+            memory: 200Mi
+            cpu: 200m
+          requests:
+            memory: 100Mi
+            cpu: 50m
+
+        env:
+        - name: AWS_REGION
+          value: ap-southeast-2
+        - name: CLUSTER_NAME
+          value: persons-finder-prod
+
+        volumeMounts:
+        # 挂载节点日志目录（只读）— 读取 /var/log/containers/*.log
+        # Mount node log directory (read-only) — read /var/log/containers/*.log
+        - name: varlog
+          mountPath: /var/log
+          readOnly: true
+        # 挂载容器日志目录（只读）
+        # Mount container log directory (read-only)
+        - name: varlibdockercontainers
+          mountPath: /var/lib/docker/containers
+          readOnly: true
+        # 挂载 Fluent Bit 配置 ConfigMap
+        # Mount Fluent Bit configuration ConfigMap
+        - name: fluent-bit-config
+          mountPath: /fluent-bit/etc/
+        # 挂载 emptyDir 用于存放 SQLite 位置数据库（DB 路径不能在只读的 /var/log 中）
+        # Mount emptyDir for the SQLite position DB (DB path cannot be in read-only /var/log)
+        - name: fluent-bit-state
+          mountPath: /fluent-bit/state
+
+      # 以 root 运行以访问 /var/log（与 Fluent Bit 官方部署一致）
+      # Run as root to access /var/log (consistent with official Fluent Bit deployment)
+      terminationGracePeriodSeconds: 10
+
+      volumes:
+      - name: varlog
+        hostPath:
+          path: /var/log
+      - name: varlibdockercontainers
+        hostPath:
+          path: /var/lib/docker/containers
+      - name: fluent-bit-config
+        configMap:
+          name: fluent-bit-config
+      # emptyDir: pod 重启后 DB 文件丢失，Fluent Bit 从日志末尾重新读取（可接受）
+      # emptyDir: DB is lost on pod restart; Fluent Bit re-reads from log tail (acceptable)
+      - name: fluent-bit-state
+        emptyDir: {}

@@ -20,6 +20,7 @@
 #   8.  应用 ESO 资源（ClusterSecretStore + ExternalSecret）/ Apply ESO manifests
 #   9.  打印 OpenAI key 设置指令 / Print OpenAI key setup instructions
 #   10. 打印应用部署指令 / Print app deployment instructions
+#   11. 部署 Fluent Bit DaemonSet（Layer 4 日志采集 → CloudWatch）/ Deploy Fluent Bit (Layer 4 → CloudWatch)
 #
 # 前置条件 / Prerequisites:
 #   - AWS CLI 已配置，具备 IAM 和 EKS 权限 / AWS CLI configured with IAM & EKS permissions
@@ -297,6 +298,40 @@ if [[ -d "${ESO_DIR}" ]]; then
   echo "    Note: ExternalSecret will sync after you set the OpenAI key (see Step 11)."
 else
   echo "    WARNING: ${ESO_DIR} not found. Skipping ESO resource creation."
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Step 11: 部署 Fluent Bit（Layer 4 日志采集）/ Deploy Fluent Bit (Layer 4 log collection)
+# ══════════════════════════════════════════════════════════════════════════════
+# Fluent Bit 是 Layer 4 AI Firewall 的日志采集组件，部署为 DaemonSet（每节点一个 Pod）
+# Fluent Bit is the Layer 4 AI Firewall log collector, deployed as a DaemonSet (one pod per node)
+#
+# 数据流 / Data flow:
+#   AuditLogger stdout → /var/log/containers/persons-finder-*.log
+#   → Fluent Bit（grep PII_AUDIT）→ CloudWatch Logs /eks/persons-finder/pii-audit
+#   → CloudWatch Metric Filter → Alarm persons-finder-pii-leak-risk
+#
+# IAM 权限由 Terraform cloudwatch.tf 中的 fluent_bit_cloudwatch 策略授予
+# IAM permissions are granted by the fluent_bit_cloudwatch policy in cloudwatch.tf
+#
+# 注意：Fluent Bit 的 SQLite 位置 DB 存储在 emptyDir（/fluent-bit/state/），
+#       Pod 重启后从日志末尾重新读取（不会丢失未来日志，只可能遗漏重启瞬间的几条）
+# Note: Fluent Bit's position DB is in emptyDir (/fluent-bit/state/).
+#       On pod restart it re-reads from log tail — no future logs are lost.
+echo ""
+echo "==> Step 11: Deploy Fluent Bit DaemonSet (Layer 4 — PII audit log collection)"
+FLUENT_BIT_MANIFEST="${REPO_ROOT}/devops/k8s/fluent-bit.yaml"
+if [[ -f "${FLUENT_BIT_MANIFEST}" ]]; then
+  kubectl apply -f "${FLUENT_BIT_MANIFEST}"
+  echo "    Waiting for Fluent Bit DaemonSet to become ready..."
+  # 等待 DaemonSet 所有期望副本就绪（最多 2 分钟）
+  # Wait for all desired DaemonSet pods to be ready (max 2 minutes)
+  kubectl rollout status daemonset fluent-bit -n kube-system --timeout=2m
+  echo "    Fluent Bit DaemonSet ready."
+  echo "    Logs will flow to CloudWatch log group: /eks/persons-finder/pii-audit"
+  echo "    Alarm: persons-finder-pii-leak-risk (triggers if redactionsApplied=0)"
+else
+  echo "    WARNING: ${FLUENT_BIT_MANIFEST} not found. Skipping Fluent Bit deployment."
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
