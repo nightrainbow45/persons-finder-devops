@@ -270,6 +270,9 @@ jobs:
           --set autoscaling.minReplicas=1 \
           --set autoscaling.maxReplicas=3 \
           --set secrets.create=false \
+          --set networkPolicy.enabled=true \
+          --set sidecar.enabled=true \
+          --set sidecar.image.tag="${IMAGE_TAG}" \
           --namespace default \
           --wait --timeout 3m
 

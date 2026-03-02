@@ -48,6 +48,7 @@ spec:
     verifyImages:
     - imageReferences:
       - "190239490233.dkr.ecr.ap-southeast-2.amazonaws.com/persons-finder:*"
+      - "190239490233.dkr.ecr.ap-southeast-2.amazonaws.com/pii-redaction-sidecar:*"
       # mutateDigest: don't rewrite tag → @sha256 in pod spec (ECR IMMUTABLE tags are safe)
       mutateDigest: false
       # verifyDigest: don't REQUIRE a digest reference; tag reference is sufficient
