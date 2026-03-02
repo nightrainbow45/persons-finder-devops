@@ -38,6 +38,23 @@ The app sends user PII (names, bios) to an external LLM provider.
 
 ---
 
+## 📚 Documentation
+
+Full implementation details for each requirement are in the [`docs/`](docs/) directory.
+
+| Document | Covers |
+|---|---|
+| [requirement-overview.md](docs/requirement-overview.md) | Single-page summary of all requirements, architecture diagram, test coverage |
+| [ApplicationDesignAndAPI.md](docs/ApplicationDesignAndAPI.md) | REST endpoints, 3-layer architecture, Haversine, OpenAPI/Swagger |
+| [ContainerizationAndDockerfile.md](docs/ContainerizationAndDockerfile.md) | AI-generated Dockerfile, identified flaws, applied fixes |
+| [InfrastructureAsCode.md](docs/InfrastructureAsCode.md) | Terraform (AWS), Helm chart, ESO secret injection, HPA, AI manifest fixes |
+| [SecurityAndSecrets.md](docs/SecurityAndSecrets.md) | Secrets management, RBAC, NetworkPolicy, pod security context, cosign, Kyverno |
+| [CICDandAIUsage.md](docs/CICDandAIUsage.md) | GitHub Actions pipeline, Trivy scan gate, SBOM, image signing, periodic re-scan |
+| [ObservabilityAndMonitoring.md](docs/ObservabilityAndMonitoring.md) | Structured logging, Fluent Bit, CloudWatch metrics & alarm, Actuator health probes |
+| [AILLMIntegration.md](docs/AILLMIntegration.md) | PII proxy pipeline (Kotlin + Go sidecar), reversible tokenization, audit log |
+
+---
+
 ## 📝 Mandatory: The AI Log (`AI_LOG.md`)
 
 We hire engineers who know how to collaborate with machines.
