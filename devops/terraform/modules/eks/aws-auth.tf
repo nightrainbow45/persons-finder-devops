@@ -59,7 +59,7 @@ resource "kubernetes_cluster_role" "deployer" {
 
   rule {
     api_groups = ["networking.k8s.io"]
-    resources  = ["ingresses"]
+    resources  = ["ingresses", "networkpolicies"]
     verbs      = ["get", "list", "watch", "create", "update", "patch", "delete"]
   }
 
