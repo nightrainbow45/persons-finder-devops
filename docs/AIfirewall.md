@@ -409,3 +409,15 @@ cosign sign --key awskms:///alias/persons-finder-cosign-prod \
 | **Tamper resistance** | Kyverno Enforce: sidecar image must be cosign-signed to deploy; IAM policy scoped to exact ECR repo |
 | **Full audit trail** | Every LLM call logged with PII type and redaction count; Fluent Bit ships to CloudWatch `/eks/persons-finder/pii-audit`; alarm fires on zero-redaction calls |
 | **Language agnostic** (Layer 2) | Sidecar (Go, stdlib-only, ~150 lines) intercepts regardless of which library makes the HTTP call |
+
+---
+
+## 10. Related Documents
+
+| Document | Covers |
+|---|---|
+| [AILLMIntegration.md](AILLMIntegration.md) | PiiProxyService implementation, PiiDetector regex rules, PiiRedactor tokens, Go sidecar (Layer 1 & 2 deep-dive) |
+| [SecurityAndSecrets.md](SecurityAndSecrets.md) | RBAC, NetworkPolicy YAML, pod security context, cosign signing, Kyverno Enforce (Layer 3 & supply chain) |
+| [ObservabilityAndMonitoring.md](ObservabilityAndMonitoring.md) | AuditLogger format, Fluent Bit pipeline, CloudWatch metric filters, alarm configuration (Layer 4 deep-dive) |
+| [CICDandAIUsage.md](CICDandAIUsage.md) | GitHub Actions pipeline, Trivy gate, SBOM, cosign attest, periodic re-scan workflow |
+| [InfrastructureAsCode.md](InfrastructureAsCode.md) | Terraform (EKS, VPC, ECR, Secrets Manager), Helm chart, HPA, ESO secret sync |

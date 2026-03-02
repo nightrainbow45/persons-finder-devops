@@ -52,6 +52,8 @@ Full implementation details for each requirement are in the [`docs/`](docs/) dir
 | [CICDandAIUsage.md](docs/CICDandAIUsage.md) | GitHub Actions pipeline, Trivy scan gate, SBOM, image signing, periodic re-scan |
 | [ObservabilityAndMonitoring.md](docs/ObservabilityAndMonitoring.md) | Structured logging, Fluent Bit, CloudWatch metrics & alarm, Actuator health probes |
 | [AILLMIntegration.md](docs/AILLMIntegration.md) | PII proxy pipeline (Kotlin + Go sidecar), reversible tokenization, audit log |
+| [AIfirewall.md](docs/AIfirewall.md) | AI Firewall 4-layer PII egress protection design, implementation status, end-to-end lifecycle |
+| [ARCHITECTURE_DIAGRAM.md](docs/ARCHITECTURE_DIAGRAM.md) | System architecture diagrams: high-level AWS, PII layers, HPA, security, CI/CD, observability |
 
 ---
 
