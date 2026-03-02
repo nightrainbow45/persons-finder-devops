@@ -161,7 +161,7 @@ containers:
 
 The app sets `LLM_PROXY_URL=http://localhost:8081` (injected by Helm when sidecar is enabled). `LlmConfig.kt` reads this via `EnvironmentConfig.llmProxyUrl` and creates the `PiiProxyService` Spring Bean with the sidecar URL as its base URL. All LLM calls then go: app → sidecar → OpenAI.
 
-The sidecar (`sidecar/main.go`, stdlib Go, ~150 lines):
+The sidecar (`sidecar/main.go`, stdlib Go, ~150 lines, built with `golang:1.25-alpine3.21`):
 
 1. Listens on `LISTEN_PORT` (default 8081)
 2. Reads full request body, runs the same regex patterns as Layer 1 (`\b[A-Z][a-z]+…\b` for names, `-?\d{1,3}\.\d{1,15}` for coordinates)
@@ -364,6 +364,8 @@ cosign sign --key awskms:///alias/persons-finder-cosign-prod \
 | Sidecar Dockerfile | 2 | ✅ Built | `devops/docker/Dockerfile.sidecar` |
 | Sidecar Helm wiring | 2 | ✅ Configured | `values.yaml`, `values-prod.yaml`, `deployment.yaml` |
 | Sidecar CI build + sign | 2 | ✅ Configured | `.github/workflows/ci-cd.yml` |
+| Sidecar IAM ECR push | 2 | ✅ Configured | `terraform/environments/prod/main.tf` |
+| Sidecar CVE policy | 2 | ✅ `.trivyignore` (4 Go stdlib CVEs, remove when golang:1.25.7+ on Docker Hub) | `.trivyignore` |
 | NetworkPolicy | 3 | ✅ Enabled in prod | `values-prod.yaml` |
 | FQDN-based egress proxy | 3 | 🔲 Optional enhancement | — |
 | CloudWatch log group | 4 | ✅ Via Fluent Bit | `/eks/persons-finder/pii-audit` |
@@ -380,6 +382,6 @@ cosign sign --key awskms:///alias/persons-finder-cosign-prod \
 | **Defence in depth** | 4 independent layers; one failure does not cause a leak |
 | **Reversibility** | Tokenization is request-scoped and in-memory; LLM responses are de-tokenized correctly |
 | **Zero trust egress** | NetworkPolicy default-deny; only approved destinations reachable |
-| **Tamper resistance** | Kyverno Enforce: sidecar image must be cosign-signed to deploy |
+| **Tamper resistance** | Kyverno Enforce: sidecar image must be cosign-signed to deploy; IAM policy scoped to exact ECR repo |
 | **Full audit trail** | Every LLM call logged with PII type and redaction count to CloudWatch |
 | **Language agnostic** (Layer 2) | Sidecar (Go, stdlib-only, ~150 lines) intercepts regardless of which library makes the HTTP call |
