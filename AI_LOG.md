@@ -4,6 +4,74 @@ This document records all AI-assisted work performed during the DevOps productio
 
 ---
 
+## AI-Generated DevOps Code — Pre-Commit Review Checklist
+
+> Use this checklist to audit any AI-generated DevOps artifact before committing.
+> Every item below corresponds to a real flaw found in this project (see the numbered sections for details).
+
+### Containerization
+
+- [ ] Base image versions are fully pinned — no `:latest`, no floating minor tags (e.g. `gradle:7.6.4-jdk11-focal`, not `gradle:7.6-jdk11`)
+- [ ] Multi-stage build: build stage uses full SDK; runtime stage uses minimal JRE/distroless/alpine
+- [ ] Non-root user created and set with `USER` instruction before `ENTRYPOINT`
+- [ ] `.dockerignore` present and excludes `.git/`, `build/`, `src/test/`, Terraform state, secrets
+- [ ] Alpine runtime stage runs `apk update && apk upgrade --no-cache` to patch OS-level CVEs
+- [ ] `HEALTHCHECK` instruction present and points to the application health endpoint
+
+### Kubernetes Manifests (Helm)
+
+- [ ] HPA uses `autoscaling/v2`, not deprecated `v2beta2` or `v2beta1`
+- [ ] Both `readinessProbe` and `livenessProbe` defined on every container (including sidecars)
+- [ ] `resources.requests` and `resources.limits` set on every container
+- [ ] Ingress `pathType` field present (`Prefix` or `Exact`) — required in `networking.k8s.io/v1`
+- [ ] Rolling update `maxSurge` sized against actual node pod capacity — on single small nodes use `maxSurge: 0, maxUnavailable: 1` to avoid scheduling deadlock
+- [ ] `podSecurityContext`: `runAsNonRoot: true`, `allowPrivilegeEscalation: false`, `capabilities: drop: [ALL]`
+- [ ] Sidecar proxy `env` direction verified — outbound forward proxy uses `LISTEN_PORT` + `UPSTREAM_URL`, not `TARGET_HOST` + `TARGET_PORT`
+- [ ] Proxy URL env variable (`LLM_PROXY_URL`) injected into the **main** container when sidecar is enabled
+
+### NetworkPolicy
+
+- [ ] DNS egress allows both `UDP 53` **and** `TCP 53` (large DNS responses fall back to TCP)
+- [ ] Internal pod egress rule present (`podSelector: {}`) so same-namespace containers can communicate
+- [ ] External HTTPS egress uses `ipBlock` with RFC1918 ranges excluded, not an open `0.0.0.0/0`
+- [ ] `enableNetworkPolicy: "true"` set on the VPC CNI addon — without this, NetworkPolicy objects exist but are never enforced
+
+### CI/CD (GitHub Actions)
+
+- [ ] Trivy scan step includes `--exit-code 1` — omitting it means HIGH/CRITICAL CVEs never fail the build
+- [ ] OIDC authentication job has `permissions: { id-token: write, contents: read }`
+- [ ] OIDC trust policy uses `StringLike` (not `StringEquals`) and covers all relevant repositories (e.g. both `app` and `app-devops` repos)
+- [ ] Tool versions pinned (e.g. `trivy v0.69.1` via direct install, not `@master` action tag)
+- [ ] `cosign sign` and `cosign attest` include `--yes` flag for non-interactive CI execution
+- [ ] SBOM `upload-artifact` step sets `retention-days: 90` (default is 0 — artifact deleted immediately)
+- [ ] Periodic re-scan workflow filters to specific tag prefix (e.g. `git-*`) to avoid scanning all images
+
+### Terraform / Infrastructure
+
+- [ ] S3 backend bucket and DynamoDB lock table documented as bootstrap prerequisites before `terraform init`
+- [ ] EKS `aws-auth` group mappings **always paired** with a `kubernetes_cluster_role` + `kubernetes_cluster_role_binding` — identity without RBAC grants zero permissions
+- [ ] ClusterRole for Helm deployer includes `secrets` CRUD (Helm stores release state as K8s Secrets)
+- [ ] EKS Launch Template sets `http_put_response_hop_limit = 2` so pods can reach EC2 IMDS (ESO, IRSA)
+- [ ] After `terraform destroy + apply`, KMS asymmetric keys get new ARNs and new public keys — Kyverno policy and CI workflow must be updated before deploying, or Enforce mode blocks all pods
+- [ ] Infrastructure idempotency tested with at least one full `destroy + apply` cycle, not just incremental applies
+
+### Kyverno / Admission
+
+- [ ] IRSA configured for `kyverno-admission-controller` ServiceAccount **before** switching to `Enforce` mode — without IRSA, ECR API calls take ~11s, exceeding the 10s webhook timeout and blocking deployments even in Audit mode
+- [ ] `mutateDigest: false` for ECR repositories with IMMUTABLE tags (rewriting tag refs to digest adds noise, no security benefit)
+- [ ] `verifyDigest: false` for ECR IMMUTABLE tags (tag references are as trustworthy as digest references)
+- [ ] Both the main image **and** all sidecar images listed in `imageReferences` — a missing sidecar is a bypass vector
+- [ ] Audit → Enforce promotion checklist documented in the policy file header
+
+### Supply Chain & Secrets
+
+- [ ] `.trivyignore` entries include: CVE ID, severity, affected component, exploit condition, and explicit removal condition
+- [ ] `cosign sign` uses image digest reference (not tag) to avoid `MANIFEST_UNKNOWN` race condition after `docker push`
+- [ ] KMS ARN for cosign is not stored as a GitHub secret if the PAT lacks `secrets: write` scope — use a workflow `env` variable instead (KMS ARNs are not sensitive)
+- [ ] `OPENAI_API_KEY` (and all secrets) injected via `envFrom.secretRef` — never baked into image or Helm values
+
+---
+
 ## Table of Contents
 
 1. [Dockerfile (Multi-Stage Build)](#1-dockerfile-multi-stage-build)
