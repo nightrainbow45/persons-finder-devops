@@ -16,6 +16,8 @@
 | 5 | Observability & Monitoring | ✅ Fully satisfied + bonus | [ObservabilityAndMonitoring.md](ObservabilityAndMonitoring.md) |
 | 6 | AI/LLM Integration | ✅ Fully satisfied + bonus | [AILLMIntegration.md](AILLMIntegration.md) |
 | — | Containerization & Dockerfile | ✅ Fully satisfied + bonus | [ContainerizationAndDockerfile.md](ContainerizationAndDockerfile.md) |
+| — | AI Firewall (PII Egress Design) | ✅ Fully implemented (4 layers) | [AIfirewall.md](AIfirewall.md) |
+| — | System Architecture Diagrams | ✅ Full diagram set | [ARCHITECTURE_DIAGRAM.md](ARCHITECTURE_DIAGRAM.md) |
 
 ---
 
@@ -69,6 +71,8 @@
 | TLS | cert-manager + Let's Encrypt; rate-limit 100 req/s; IP allowlist support |
 
 **Key files:** `rbac.yaml` · `networkpolicy.yaml` · `deployment.yaml` · `secrets-manager/main.tf` · `kyverno/verify-image-signatures.yaml` · `.trivyignore`
+
+**See also:** [AIfirewall.md](AIfirewall.md) — full 4-layer PII egress protection design (NetworkPolicy = Layer 3)
 
 ---
 
@@ -128,6 +132,8 @@
 | Tests | 11 unit tests + 5 property tests × 100 iterations (500 random inputs) |
 
 **Key files:** `PiiProxyService.kt` (115 lines) · `PiiDetector.kt` · `PiiRedactor.kt` · `RedactionConfig.kt` · `sidecar/main.go` (234 lines)
+
+**See also:** [AIfirewall.md](AIfirewall.md) — end-to-end threat model, layer-by-layer design rationale, token lifecycle, and implementation status table
 
 ---
 
@@ -189,6 +195,9 @@ CloudWatch Logs /eks/persons-finder/pii-audit
 **NetworkPolicy (Layer 3):** Ingress from ingress-nginx only; Egress: DNS + same namespace + external TCP 443 (public IPs). Enforced at kernel level via VPC CNI eBPF.
 
 **Kyverno:** Enforce mode — any unsigned image is blocked at Kubernetes admission webhook before it can start.
+
+Full component diagrams (HPA, security layers, CI/CD pipeline, observability): [ARCHITECTURE_DIAGRAM.md](ARCHITECTURE_DIAGRAM.md)
+Full 4-layer PII egress design with threat model and end-to-end lifecycle: [AIfirewall.md](AIfirewall.md)
 
 ---
 
