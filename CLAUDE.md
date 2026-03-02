@@ -32,6 +32,7 @@ Spring Boot 应用遵循严格三层架构，代码位于 `src/main/kotlin/com/p
 - **`presentation/`** — REST controllers (`PersonController`), base path `/api/v1/persons` / REST 控制器，基础路径为 `/api/v1/persons`
 - **`domain/services/`** — Business logic interfaces and implementations (`PersonsServiceImpl`, `LocationsServiceImpl`). Location distance uses the Haversine formula. / 业务逻辑接口及实现类（`PersonsServiceImpl`、`LocationsServiceImpl`），位置距离计算使用 Haversine 公式
 - **`data/`** — JPA entities (`Person`, `Location`) backed by H2 in-memory database / JPA 实体（`Person`、`Location`），使用 H2 内存数据库
+- **`config/`** — Cross-cutting Spring configuration: `OpenAPIConfig` (springdoc-openapi-ui 1.7.0, reads `swagger.*` properties), `CorsConfig` (reads `cors.allowed-origins`, default `*`) / 横切 Spring 配置：OpenAPI/Swagger 文档配置、CORS 跨域配置
 
 ### PII Protection System / PII 保护系统 (`pii/` package)
 
@@ -71,11 +72,25 @@ Tests live in `src/test/kotlin/com/persons/finder/` and split into two distinct 
 - `PiiRedactionCompletenessPropertyTest` and `AuditLogCompletenessPropertyTest` use **jqwik** property-based testing with 100+ iterations / 使用 jqwik 属性测试框架，每项属性至少执行 100 次随机迭代
 - These are unit tests with no external dependencies / 纯单元测试，无任何外部依赖
 
+**`config/` — OpenAPI/CORS Spring integration tests / OpenAPI 与 CORS 集成测试** (requires running app via `@SpringBootTest` / 需要启动完整 Spring 上下文)
+- `OpenAPISpecificationTest` — verifies `/v3/api-docs` returns all expected paths and schemas
+- `OpenAPISpecificationPropertiesTest` — 8 property-based tests (100+ iterations each): spec completeness, parameter docs, request body schemas, CORS headers, Swagger UI accessibility, health check isolation
+- `CorsConfigurationTest`, `SwaggerUIAccessibilityTest`, `ModelExamplesTest`, `HealthCheckIsolationTest` — focused integration tests
+- **Gotcha:** doc comments must not contain `/**` as a substring (Kotlin treats it as a nested comment opener) / Kotlin 文档注释中不能包含 `/**` 子序列（会被解析为嵌套注释）
+
 ### Key Helm Chart Defaults / Helm Chart 关键默认值
 
 The sidecar and network policy are **disabled by default** in `values.yaml` and only enabled in `values-prod.yaml`. The main application container always reads `OPENAI_API_KEY` from a K8s Secret referenced via `envFrom.secretRef`. The ECR image repository targets `ap-southeast-2`.
 
 Sidecar 容器和 NetworkPolicy 在 `values.yaml` 中**默认禁用**，仅在 `values-prod.yaml` 中启用。主应用容器始终通过 `envFrom.secretRef` 从 K8s Secret 读取 `OPENAI_API_KEY`。ECR 镜像仓库指向 `ap-southeast-2` 区域。
+
+**Swagger/OpenAPI:** controlled by `swagger.enabled` (default `true`). Title/version/description read from `swagger.title`, `swagger.version`, `swagger.description` in `application.properties` or Helm `values.yaml`. Live UI at `/swagger-ui/index.html`, spec at `/v3/api-docs`. Set `SWAGGER_ENABLED=false` to disable in prod if needed.
+
+**CORS:** `cors.allowed-origins` (default `*`). In prod set via env var `CORS_ALLOWED_ORIGINS=https://your-domain.com` — this enables `allowCredentials` and disables the wildcard.
+
+**Swagger / OpenAPI：** 由 `swagger.enabled` 控制（默认 `true`）。标题/版本/描述从 `swagger.*` 属性读取。Swagger UI 地址 `/swagger-ui/index.html`，规范地址 `/v3/api-docs`。
+
+**CORS：** `cors.allowed-origins` 控制跨域（默认 `*`）。生产环境通过环境变量 `CORS_ALLOWED_ORIGINS` 设置具体域名，此时自动关闭通配符并开启 `allowCredentials`。
 
 ### CI/CD Pipeline Logic / CI/CD 流水线逻辑
 
@@ -95,3 +110,9 @@ kubectl create secret generic persons-finder-secrets \
 
 The Helm `secret.yaml` template conditionally creates this Secret only when `secret.create: true` in values.
 Helm 的 `secret.yaml` 模板仅当 values 中 `secret.create: true` 时才创建该 Secret。
+
+### Local Working Docs / 本地工作文档
+
+`.docs/` is **gitignored** — it holds session notes, design scratch pads, and run logs that are not part of the submission. Do not commit anything from `.docs/`.
+
+`.docs/` 目录已加入 `.gitignore`，存放会话笔记、设计草稿和运行日志，不属于提交内容，不要提交。
