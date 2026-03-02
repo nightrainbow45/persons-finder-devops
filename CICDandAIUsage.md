@@ -4,6 +4,32 @@
 
 ---
 
+## Quick Reference
+
+**Requirement vs Implementation**
+
+| Requirement | Current Status |
+|---|---|
+| GitHub Actions CI pipeline | ✅ `.github/workflows/ci-cd.yml` |
+| Trivy/Snyk OR mocked AI reviewer | ✅ Real Trivy scan (not a mock) — both images scanned |
+| Fail build on unsafe code | ✅ `--exit-code 1`, CRITICAL/HIGH fails immediately |
+
+**Code Snippet Source Map**
+
+| Snippet | Source |
+|---|---|
+| CI trigger | `ci-cd.yml` lines 1–21 |
+| Install Trivy + main image scan gate | `ci-cd.yml` lines 102–119 (18 lines) |
+| Sidecar scan gate | `ci-cd.yml` lines 206–213 (8 lines) |
+| SBOM generate + upload | `ci-cd.yml` lines 122–137 (16 lines) |
+| cosign sign + attest | `ci-cd.yml` lines 161–183 (23 lines) |
+| Kyverno ClusterPolicy spec | `verify-image-signatures.yaml` lines 32–56 (25 lines) |
+| Periodic re-scan trigger | `security-rescan.yml` lines 5–8 (4 lines) |
+| Periodic re-scan gate loop | `security-rescan.yml` lines 91–105 (15 lines) |
+| CVE suppression entries | `.trivyignore` lines 39–53 |
+
+---
+
 ## 1. What Was Asked
 
 | Requirement item | Description |
