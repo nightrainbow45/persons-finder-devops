@@ -1,6 +1,6 @@
 # ── Stage 1: Build ─────────────────────────────────────────────────────────────
 # Use pinned Go version on Alpine for a minimal, reproducible build environment.
-FROM golang:1.22.4-alpine3.20 AS builder
+FROM golang:1.24-alpine3.21 AS builder
 
 WORKDIR /build
 
@@ -16,7 +16,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o pii-sidecar 
 # ── Stage 2: Runtime ────────────────────────────────────────────────────────────
 # Minimal Alpine runtime: ~7 MB base image.
 # Pinned to the same minor version as the build stage for consistency.
-FROM alpine:3.20.6
+FROM alpine:3.21
 
 # Create a non-root user and group.
 RUN addgroup -S sidecar && adduser -S sidecar -G sidecar
