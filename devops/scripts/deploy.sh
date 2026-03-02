@@ -166,6 +166,23 @@ if [[ "${ENVIRONMENT}" == "dev" ]]; then
   SECRETS_FLAG="--set secrets.create=true"
 fi
 
+# ── PII Sidecar 镜像 tag / PII sidecar image tag ──────────────────────────
+# prod（values-prod.yaml: sidecar.enabled=true）部署时，sidecar 使用与主应用
+# 相同的 image tag，确保两者来自同一次 CI 构建，保持版本一致。
+# In prod (sidecar.enabled=true), the sidecar uses the same image tag as the
+# main app to guarantee both images come from the same CI build run.
+#
+# CI 在同一个 job 中构建并推送两个镜像：
+#   190239490233.dkr.ecr.ap-southeast-2.amazonaws.com/persons-finder:git-<sha>
+#   190239490233.dkr.ecr.ap-southeast-2.amazonaws.com/pii-redaction-sidecar:git-<sha>
+# CI builds and pushes both images in the same job with matching tags:
+#   .../persons-finder:git-<sha>
+#   .../pii-redaction-sidecar:git-<sha>
+SIDECAR_TAG_FLAG=""
+if [[ "${ENVIRONMENT}" == "prod" ]]; then
+  SIDECAR_TAG_FLAG="--set sidecar.image.tag=${IMAGE_TAG}"
+fi
+
 # ── 执行 Helm 部署 / Execute Helm deployment ──────────────────────────────
 # helm upgrade --install：
 #   - 如果 release 不存在 → 执行 install
@@ -183,6 +200,7 @@ helm upgrade --install "${RELEASE_NAME}" "${CHART_DIR}" \
   --create-namespace \
   --set image.tag="${IMAGE_TAG}" \
   ${SECRETS_FLAG} \
+  ${SIDECAR_TAG_FLAG} \
   "${EXTRA_SETS[@]+"${EXTRA_SETS[@]}"}" \
   ${DRY_RUN} \
   --wait \

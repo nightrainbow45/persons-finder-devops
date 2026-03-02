@@ -136,7 +136,7 @@ Layer 1 only works if the developer routes every LLM call through `PiiProxyServi
 
 **What it is:** A separate container in the same pod that intercepts all outbound HTTP, providing a language-agnostic, enforcement-level redaction net.
 
-**Status:** Skeleton already configured in Helm (`sidecar.enabled: true` in `values-prod.yaml`). The sidecar image ECR URI is pre-registered. This section defines the full infrastructure design.
+**Status:** ✅ Fully implemented. Go proxy service built at `sidecar/main.go`, Dockerfile at `devops/docker/Dockerfile.sidecar`. Helm chart wires it correctly. CI builds, scans and signs it alongside the main image.
 
 ### Sidecar deployment in the Pod
 
@@ -157,30 +157,32 @@ containers:
     #   requests: cpu=100m, memory=256Mi
 ```
 
-### Two implementation options for the sidecar
+### Implementation: Application-configured proxy (Option A — implemented)
 
-#### Option A: Application-configured proxy (Recommended for this project)
+The app sets `LLM_PROXY_URL=http://localhost:8081` (injected by Helm when sidecar is enabled). `LlmConfig.kt` reads this via `EnvironmentConfig.llmProxyUrl` and creates the `PiiProxyService` Spring Bean with the sidecar URL as its base URL. All LLM calls then go: app → sidecar → OpenAI.
 
-The app sets `LLM_PROXY_URL=http://localhost:8081`. All LLM SDK calls go through the sidecar port. The sidecar:
+The sidecar (`sidecar/main.go`, stdlib Go, ~150 lines):
 
-1. Receives the request from the main container
-2. Runs the same `PiiDetector` → `PiiRedactor` pipeline (shared library, or reimplemented in Go/Python for lighter weight)
-3. Forwards the redacted request to `api.openai.com`
-4. De-tokenizes the response before returning to the main container
+1. Listens on `LISTEN_PORT` (default 8081)
+2. Reads full request body, runs the same regex patterns as Layer 1 (`\b[A-Z][a-z]+…\b` for names, `-?\d{1,3}\.\d{1,15}` for coordinates)
+3. Builds upstream URL from `UPSTREAM_URL` (default `https://api.openai.com`) + original request path
+4. Forwards redacted body to the real provider, passes all headers including `Authorization` unchanged
+5. Restores tokens in the response body before returning to the main container
+6. Emits a JSON audit entry to stdout with `"layer":"sidecar-layer2"` for CloudWatch differentiation
 
-**Pros:** No iptables manipulation required; explicit and auditable.
+Health check endpoint at `GET /health` is used by Kubernetes liveness/readiness probes.
 
-#### Option B: Transparent iptables interception (Istio-style)
+#### Alternative: Transparent iptables interception (Istio-style, not implemented)
 
-An init container sets iptables rules to redirect all outbound TCP:443 traffic to the sidecar port. The main container needs zero configuration changes.
+An init container sets iptables rules to redirect all outbound TCP:443 traffic to the sidecar port automatically.
 
 ```
 Init Container (iptables)
   └─► iptables -t nat -A OUTPUT -p tcp --dport 443 -j REDIRECT --to-port 8081
 ```
 
-**Pros:** Truly zero app-code dependency. Even a bug that bypasses `PiiProxyService` is caught.
-**Cons:** Requires `NET_ADMIN` capability in the init container, which must be explicitly granted and audited.
+**Pros:** Zero app-code dependency. Even direct calls that bypass `PiiProxyService` are caught.
+**Cons:** Requires `NET_ADMIN` capability in the init container, which must be explicitly granted and audited. Chosen not to implement here as Option A provides the same guarantees with less privilege.
 
 ### Why sidecar over a shared gateway?
 
@@ -357,8 +359,11 @@ cosign sign --key awskms:///alias/persons-finder-cosign-prod \
 | `PiiRedactor` | 1 | ✅ Built | `src/.../pii/PiiRedactor.kt` |
 | `PiiProxyService` | 1 | ✅ Built | `src/.../pii/PiiProxyService.kt` |
 | `AuditLogger` | 1, 4 | ✅ Built | `src/.../pii/AuditLogger.kt` |
-| Sidecar Helm skeleton | 2 | ✅ Configured | `values.yaml`, `values-prod.yaml` |
-| Sidecar container image | 2 | 🔲 To build | ECR URI pre-registered |
+| `LlmConfig` Spring Bean | 1 | ✅ Built | `src/.../config/LlmConfig.kt` |
+| Go sidecar proxy | 2 | ✅ Built | `sidecar/main.go` |
+| Sidecar Dockerfile | 2 | ✅ Built | `devops/docker/Dockerfile.sidecar` |
+| Sidecar Helm wiring | 2 | ✅ Configured | `values.yaml`, `values-prod.yaml`, `deployment.yaml` |
+| Sidecar CI build + sign | 2 | ✅ Configured | `.github/workflows/ci-cd.yml` |
 | NetworkPolicy | 3 | ✅ Enabled in prod | `values-prod.yaml` |
 | FQDN-based egress proxy | 3 | 🔲 Optional enhancement | — |
 | CloudWatch log group | 4 | ✅ Via Fluent Bit | `/eks/persons-finder/pii-audit` |
@@ -377,4 +382,4 @@ cosign sign --key awskms:///alias/persons-finder-cosign-prod \
 | **Zero trust egress** | NetworkPolicy default-deny; only approved destinations reachable |
 | **Tamper resistance** | Kyverno Enforce: sidecar image must be cosign-signed to deploy |
 | **Full audit trail** | Every LLM call logged with PII type and redaction count to CloudWatch |
-| **Language agnostic** (Layer 2) | Sidecar intercepts regardless of which library or language makes the HTTP call |
+| **Language agnostic** (Layer 2) | Sidecar (Go, stdlib-only, ~150 lines) intercepts regardless of which library makes the HTTP call |

@@ -190,6 +190,41 @@ if [[ "${ENVIRONMENT}" == "prod" ]]; then
   check "Kyverno admission-controller running" \
     kubectl rollout status deployment kyverno-admission-controller -n kyverno --timeout=5s
 
+  # ── PII Redaction Sidecar (Layer 2) ──────────────────────────────────────
+  # values-prod.yaml 启用了 sidecar（sidecar.enabled=true），每个 Pod 包含两个容器：
+  # 主应用容器（persons-finder）+ sidecar 容器（pii-redaction-sidecar）
+  # prod enables the sidecar, so each pod has two containers: main app + sidecar.
+  #
+  # 检查项 / Checks:
+  #   1. sidecar 容器处于 Ready 状态（确认镜像拉取成功、进程正常启动）
+  #   2. 主容器存在 LLM_PROXY_URL 环境变量（确认 Helm 将 LLM 流量路由到 sidecar）
+  # Checks:
+  #   1. Sidecar container is Ready (image pulled successfully, process started)
+  #   2. Main container has LLM_PROXY_URL env var (Helm wired LLM traffic through sidecar)
+  echo ""
+  echo "--- PII Redaction Sidecar / Layer 2 (prod) ---"
+
+  # 通过 jsonpath 查询 pii-redaction-sidecar 容器的 ready 状态
+  # Query the ready field of the pii-redaction-sidecar container via jsonpath
+  SIDECAR_READY=$(kubectl get pods -n "${NAMESPACE}" \
+    -l "app.kubernetes.io/name=persons-finder" \
+    -o jsonpath='{.items[0].status.containerStatuses[?(@.name=="pii-redaction-sidecar")].ready}' \
+    2>/dev/null || echo "false")
+  echo "    Sidecar container ready: ${SIDECAR_READY}"
+  check "Sidecar container (pii-redaction-sidecar) Ready" \
+    test "${SIDECAR_READY}" == "true"
+
+  # 检查主容器是否注入了 LLM_PROXY_URL（由 deployment.yaml 在 sidecar.enabled=true 时添加）
+  # Check that LLM_PROXY_URL was injected into the main container (added by deployment.yaml
+  # when sidecar.enabled=true), which routes all LLM calls through the sidecar proxy
+  LLM_PROXY_URL=$(kubectl get pods -n "${NAMESPACE}" \
+    -l "app.kubernetes.io/name=persons-finder" \
+    -o jsonpath='{.items[0].spec.containers[?(@.name=="persons-finder")].env[?(@.name=="LLM_PROXY_URL")].value}' \
+    2>/dev/null || echo "")
+  echo "    LLM_PROXY_URL: ${LLM_PROXY_URL:-<not set>}"
+  check "LLM_PROXY_URL injected into main container" \
+    test -n "${LLM_PROXY_URL}"
+
   # ── External Secrets Operator ─────────────────────────────────────────────
   # 检查 ESO 同步状态：
   #   ClusterSecretStore: 连接 AWS Secrets Manager 的配置，status.conditions[0].reason
