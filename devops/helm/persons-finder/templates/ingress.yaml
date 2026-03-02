@@ -5,10 +5,27 @@ metadata:
   name: {{ include "persons-finder.fullname" . }}
   labels:
     {{- include "persons-finder.labels" . | nindent 4 }}
-  {{- with .Values.ingress.annotations }}
   annotations:
+    {{- if .Values.ingress.className }}
+    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
+    {{- end }}
+    {{- if .Values.ingress.tls }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.certManager.clusterIssuer | default "letsencrypt-prod" }}
+    {{- end }}
+    {{- if .Values.swagger.basicAuth.enabled }}
+    # Path-level basic authentication for Swagger UI only
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      location ~ ^/(swagger-ui|v3/api-docs) {
+        auth_basic "Authentication Required";
+        auth_basic_user_file /etc/nginx/secrets/{{ include "persons-finder.fullname" . }}-basic-auth;
+      }
+    {{- end }}
+    {{- if .Values.ingress.ipWhitelist }}
+    nginx.ingress.kubernetes.io/whitelist-source-range: {{ .Values.ingress.ipWhitelist }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- end }}
 spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}

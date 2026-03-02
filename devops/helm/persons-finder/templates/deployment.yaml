@@ -48,6 +48,23 @@ spec:
         env:
         - name: SPRING_PROFILES_ACTIVE
           value: "prod"
+        {{- if .Values.swagger.enabled }}
+        - name: SWAGGER_ENABLED
+          value: "true"
+        - name: API_TITLE
+          value: {{ .Values.swagger.title | quote }}
+        - name: API_VERSION
+          value: {{ .Values.swagger.version | quote }}
+        - name: API_DESCRIPTION
+          value: {{ .Values.swagger.description | quote }}
+        {{- else }}
+        - name: SWAGGER_ENABLED
+          value: "false"
+        {{- end }}
+        {{- if .Values.cors.allowedOrigins }}
+        - name: CORS_ALLOWED_ORIGINS
+          value: {{ .Values.cors.allowedOrigins | quote }}
+        {{- end }}
         {{- if .Values.sidecar.enabled }}
         # When the sidecar is enabled, route all LLM calls through it (localhost)
         # instead of calling the provider directly. The sidecar redacts PII before

@@ -30,6 +30,7 @@ dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-web")
 	implementation("com.h2database:h2:2.2.220")
 	implementation("org.jetbrains.kotlin:kotlin-reflect")
+	implementation("org.springdoc:springdoc-openapi-ui:1.7.0")
 	testImplementation("org.springframework.boot:spring-boot-starter-test")
 	testImplementation("net.jqwik:jqwik:1.7.4")
 }

@@ -38,9 +38,29 @@ service:
   targetPort: 8080
   annotations: {}
 
+# Swagger/OpenAPI Configuration
+swagger:
+  enabled: true
+  title: "Persons Finder API"
+  version: "1.0.0"
+  description: "REST API for managing persons and their locations"
+  
+  # Basic authentication for Swagger UI (production recommended)
+  basicAuth:
+    enabled: false
+    # username: admin
+    # password: <bcrypt-hashed-password>
+    # Generate with: htpasswd -nb admin <password>
+
+# CORS Configuration
+cors:
+  # Comma-separated list of allowed origins
+  # Use "*" for development, specific domains for production
+  allowedOrigins: "*"
+
 ingress:
   enabled: false
-  className: ""
+  className: "nginx"
   annotations: {}
     # kubernetes.io/ingress.class: nginx
     # cert-manager.io/cluster-issuer: letsencrypt-prod
@@ -53,6 +73,14 @@ ingress:
   #  - secretName: persons-finder-tls
   #    hosts:
   #      - persons-finder.example.com
+  
+  # IP whitelist for additional security (optional)
+  # Example: "203.0.113.0/24,198.51.100.0/24"
+  ipWhitelist: ""
+  
+  # cert-manager configuration
+  certManager:
+    clusterIssuer: "letsencrypt-prod"
 
 resources:
   limits:
