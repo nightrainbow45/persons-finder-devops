@@ -116,3 +116,8 @@ docker-compose.override.yml
 # Go sidecar build artifacts
 ##############################################
 sidecar/pii-sidecar
+
+##############################################
+# Local working documents (not for submission)
+##############################################
+.docs/
