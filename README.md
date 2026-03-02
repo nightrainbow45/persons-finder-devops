@@ -44,16 +44,16 @@ Full implementation details for each requirement are in the [`docs/`](docs/) dir
 
 | Document | Covers |
 |---|---|
-| [requirement-overview.md](docs/requirement-overview.md) | Single-page summary of all requirements, architecture diagram, test coverage |
+| [requirement-overview.md](docs/requirement-overview.md) | Single-page summary of all requirements, implementation status, test coverage |
+| [ARCHITECTURE_DIAGRAM.md](docs/ARCHITECTURE_DIAGRAM.md) | System architecture diagrams: high-level AWS, PII layers, HPA, security, CI/CD, observability |
 | [ApplicationDesignAndAPI.md](docs/ApplicationDesignAndAPI.md) | REST endpoints, 3-layer architecture, Haversine, OpenAPI/Swagger |
 | [ContainerizationAndDockerfile.md](docs/ContainerizationAndDockerfile.md) | AI-generated Dockerfile, identified flaws, applied fixes |
 | [InfrastructureAsCode.md](docs/InfrastructureAsCode.md) | Terraform (AWS), Helm chart, ESO secret injection, HPA, AI manifest fixes |
 | [SecurityAndSecrets.md](docs/SecurityAndSecrets.md) | Secrets management, RBAC, NetworkPolicy, pod security context, cosign, Kyverno |
+| [AIfirewall.md](docs/AIfirewall.md) | AI Firewall 4-layer PII egress protection: threat model, design rationale, end-to-end lifecycle |
 | [CICDandAIUsage.md](docs/CICDandAIUsage.md) | GitHub Actions pipeline, Trivy scan gate, SBOM, image signing, periodic re-scan |
 | [ObservabilityAndMonitoring.md](docs/ObservabilityAndMonitoring.md) | Structured logging, Fluent Bit, CloudWatch metrics & alarm, Actuator health probes |
 | [AILLMIntegration.md](docs/AILLMIntegration.md) | PII proxy pipeline (Kotlin + Go sidecar), reversible tokenization, audit log |
-| [AIfirewall.md](docs/AIfirewall.md) | AI Firewall 4-layer PII egress protection design, implementation status, end-to-end lifecycle |
-| [ARCHITECTURE_DIAGRAM.md](docs/ARCHITECTURE_DIAGRAM.md) | System architecture diagrams: high-level AWS, PII layers, HPA, security, CI/CD, observability |
 
 ---
 
