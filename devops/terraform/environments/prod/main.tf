@@ -239,6 +239,36 @@ resource "aws_iam_role_policy_attachment" "kyverno_ecr_readonly" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
+# --- PII Sidecar ECR push policy for GitHub Actions ---
+# Added here (not in IAM module) because the sidecar ECR repo is created by CI
+# automatically on first push (aws ecr create-repository || true), not via Terraform.
+# The IAM module's ecr-push policy only covers the main persons-finder repo.
+resource "aws_iam_role_policy" "github_actions_sidecar_ecr" {
+  name = "ecr-push-sidecar"
+  role = module.iam.github_actions_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "SidecarECRPushPull"
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage",
+          "ecr:PutImage",
+          "ecr:InitiateLayerUpload",
+          "ecr:UploadLayerPart",
+          "ecr:CompleteLayerUpload",
+          "ecr:CreateRepository"
+        ]
+        Resource = "arn:aws:ecr:${var.aws_region}:${var.aws_account_id}:repository/pii-redaction-sidecar"
+      }
+    ]
+  })
+}
+
 # --- cosign KMS signing policy for GitHub Actions ---
 # Added here (not in IAM module) to avoid circular dependency:
 #   ECR module uses github_actions_role_arn → depends on IAM
