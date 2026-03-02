@@ -70,7 +70,7 @@ This design implements **4 defence layers**. Each layer is independent — if on
                                              <COORD_b7d9e2> instead of "-33.8688"
 ```
 
-**Layer 4 — Observability** runs across all layers (CloudWatch + Grafana alerts).
+**Layer 4 — Observability** runs across all layers (CloudWatch + Grafana alerts). **Status: ✅ Fully implemented** — Fluent Bit DaemonSet ships PII audit logs to CloudWatch, with metric filters and leak-risk alarm active.
 
 ---
 
@@ -279,32 +279,40 @@ persons-finder pod
 
 ## 6. Layer 4: Observability & Alerting
 
+**Status: ✅ Fully implemented.**
+
 Every PII event is observable and alertable. This closes the loop: redaction prevents leaks, observability detects misconfigurations.
 
 ### CloudWatch: Structured PII audit logs
 
-Logs flow: `AuditLogger stdout` → `Fluent Bit DaemonSet` → `CloudWatch Logs group /eks/persons-finder/pii-audit`
+**Status: ✅ Active.** Logs flow: `AuditLogger stdout` → `Fluent Bit DaemonSet` → `CloudWatch Logs group /eks/persons-finder/pii-audit`
 
 ```
-CloudWatch Metric Filter:
-  Pattern: { $.type = "PII_AUDIT" && $.redactionsApplied > 0 }
-  Metric: PiiRedactionsTotal (count)
+Fluent Bit DaemonSet (kube-system):
+  Input:  tail /var/log/containers/persons-finder-*.log  (main + sidecar)
+  Filter: grep "PII_AUDIT"
+  Parser: pii_audit_json (extracts type, redactionsApplied, requestId, etc.)
+  Output: cloudwatch_logs → /eks/persons-finder/pii-audit
+  Note:   SQLite position DB stored in emptyDir (/fluent-bit/state/) — not in
+          read-only /var/log hostPath mount
 
-CloudWatch Alarm:
-  PiiLeakRisk: redactionsApplied = 0 AND destination CONTAINS "openai.com"
-  → SNS → PagerDuty (potential unredacted request)
+CloudWatch Metric Filter 1 — pii-audit-total:
+  Pattern: { $.type = "PII_AUDIT" }
+  Metric:  PersonsFinder/PII / PiiAuditTotal (count, every LLM call)
+
+CloudWatch Metric Filter 2 — pii-zero-redactions:
+  Pattern: { $.type = "PII_AUDIT" && $.redactionsApplied = 0 }
+  Metric:  PersonsFinder/PII / PiiZeroRedactions
+
+CloudWatch Alarm — persons-finder-pii-leak-risk:
+  Trigger: PiiZeroRedactions Sum ≥ 1 in a 5-minute window
+  State:   OK (no leak events detected)
+  Action:  alarm_actions can be wired to SNS → PagerDuty/email (commented out)
 ```
 
-### Grafana dashboard (Prometheus metrics from sidecar)
+### Grafana dashboard (optional enhancement)
 
-The sidecar exposes `/metrics` on a separate port:
-
-| Metric | Description | Alert threshold |
-|---|---|---|
-| `pii_requests_total` | Total LLM requests processed | — |
-| `pii_redactions_total` | Tokens replaced per request | Alert if p99 = 0 for 5m |
-| `pii_proxy_duration_seconds` | Sidecar processing latency | Alert if p99 > 500ms |
-| `pii_detection_errors_total` | Detection failures | Alert if > 0 |
+A Grafana dashboard can be connected to the `PersonsFinder/PII` CloudWatch namespace to visualise `PiiAuditTotal` and `PiiZeroRedactions` over time. Not currently configured — the CloudWatch console provides sufficient visibility for this project's scale.
 
 ### Kyverno policy (already active): image signature verification
 
@@ -379,8 +387,11 @@ cosign sign --key awskms:///alias/persons-finder-cosign-prod \
 | NetworkPolicy egress rules | 3 | ✅ Fixed (DNS + internal + external HTTPS) | `values.yaml` |
 | VPC CNI Network Policy Agent | 3 | ✅ `enableNetworkPolicy=true` in Terraform | `modules/eks/main.tf` |
 | FQDN-based egress proxy | 3 | 🔲 Optional enhancement (Squid/Envoy) | — |
-| CloudWatch log group | 4 | ✅ Via Fluent Bit | `/eks/persons-finder/pii-audit` |
-| Grafana PII dashboard | 4 | 🔲 To configure | — |
+| Fluent Bit DaemonSet | 4 | ✅ Built | `devops/k8s/fluent-bit.yaml` |
+| CloudWatch log group | 4 | ✅ Terraform managed | `/eks/persons-finder/pii-audit` (90-day retention) |
+| CloudWatch Metric Filters | 4 | ✅ Built | `pii-audit-total`, `pii-zero-redactions` |
+| CloudWatch Alarm | 4 | ✅ Built | `persons-finder-pii-leak-risk` (zero-redaction trigger) |
+| Grafana PII dashboard | 4 | 🔲 Optional enhancement | — |
 | Kyverno (image signing) | 4 | ✅ Enforce mode | `devops/kyverno/` |
 
 ---
@@ -394,5 +405,5 @@ cosign sign --key awskms:///alias/persons-finder-cosign-prod \
 | **Reversibility** | Tokenization is request-scoped and in-memory; LLM responses are de-tokenized correctly |
 | **Zero trust egress** | NetworkPolicy default-deny; only approved destinations reachable |
 | **Tamper resistance** | Kyverno Enforce: sidecar image must be cosign-signed to deploy; IAM policy scoped to exact ECR repo |
-| **Full audit trail** | Every LLM call logged with PII type and redaction count to CloudWatch |
+| **Full audit trail** | Every LLM call logged with PII type and redaction count; Fluent Bit ships to CloudWatch `/eks/persons-finder/pii-audit`; alarm fires on zero-redaction calls |
 | **Language agnostic** (Layer 2) | Sidecar (Go, stdlib-only, ~150 lines) intercepts regardless of which library makes the HTTP call |
