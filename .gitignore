@@ -108,9 +108,9 @@ docker-compose.override.yml
 .claude/
 
 ##############################################
-# Kiro project tool
+# Kiro project tool (entire workspace dir)
 ##############################################
-.kiro/settings/
+.kiro/
 
 ##############################################
 # Go sidecar build artifacts
@@ -121,3 +121,13 @@ sidecar/pii-sidecar
 # Local working documents (not for submission)
 ##############################################
 .docs/
+
+##############################################
+# Session / verification temp files
+##############################################
+checkpoint-*.md
+*-verification-results.md
+test-summary-*.md
+test-results/
+verify-*.sh
+tfplan-*
