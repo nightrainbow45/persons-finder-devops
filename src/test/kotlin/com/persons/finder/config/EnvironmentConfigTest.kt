@@ -42,6 +42,18 @@ class EnvironmentConfigUnitTest {
         // Should log info but not throw
         config.validateEnvironment()
     }
+
+    @Test
+    fun `llmProxyUrl defaults to openai when not specified`() {
+        val config = EnvironmentConfig("")
+        assertEquals("https://api.openai.com", config.llmProxyUrl)
+    }
+
+    @Test
+    fun `llmProxyUrl stores sidecar localhost url when provided`() {
+        val config = EnvironmentConfig("", "http://localhost:8081")
+        assertEquals("http://localhost:8081", config.llmProxyUrl)
+    }
 }
 
 @SpringBootTest

@@ -111,26 +111,32 @@ class SidecarConfigurationTest {
     // --- Localhost communication setup ---
 
     @Test
-    fun `sidecar should configure PROXY_PORT environment variable`() {
+    fun `sidecar should configure LISTEN_PORT environment variable`() {
+        // LISTEN_PORT tells the sidecar which port to bind on inside the pod.
+        // The main app routes LLM calls to this port via LLM_PROXY_URL=http://localhost:<port>.
         assertTrue(
-            deploymentContent.contains("PROXY_PORT"),
-            "Sidecar should have PROXY_PORT environment variable for proxy listening port"
+            deploymentContent.contains("LISTEN_PORT"),
+            "Sidecar should have LISTEN_PORT environment variable for the proxy listen port"
         )
     }
 
     @Test
-    fun `sidecar should configure TARGET_HOST as localhost`() {
+    fun `sidecar should configure UPSTREAM_URL pointing to real LLM provider`() {
+        // UPSTREAM_URL is the real LLM endpoint the sidecar forwards redacted requests to.
+        // The main app only knows about localhost:<port>; the sidecar handles the external hop.
         assertTrue(
-            deploymentContent.contains("TARGET_HOST") && deploymentContent.contains("localhost"),
-            "Sidecar should have TARGET_HOST set to localhost for pod-local communication"
+            deploymentContent.contains("UPSTREAM_URL"),
+            "Sidecar should have UPSTREAM_URL pointing to the real LLM provider (e.g. api.openai.com)"
         )
     }
 
     @Test
-    fun `sidecar should configure TARGET_PORT for main application`() {
+    fun `main container should receive LLM_PROXY_URL when sidecar is enabled`() {
+        // When sidecar.enabled=true, the main container gets LLM_PROXY_URL=http://localhost:<port>
+        // so PiiProxyService routes LLM calls through the sidecar instead of calling OpenAI directly.
         assertTrue(
-            deploymentContent.contains("TARGET_PORT"),
-            "Sidecar should have TARGET_PORT pointing to the main application container port"
+            deploymentContent.contains("LLM_PROXY_URL"),
+            "Main container should receive LLM_PROXY_URL env var when sidecar is enabled"
         )
     }
 

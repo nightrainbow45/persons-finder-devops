@@ -93,8 +93,13 @@ secrets:
   # OPENAI_API_KEY: ""  # Set this value or use external secrets
 
 # PII Redaction Sidecar
+# Layer 2 egress proxy: intercepts all LLM calls, redacts PII before forwarding.
+# When enabled, the main container routes LLM requests through localhost:<port>
+# instead of calling the LLM provider directly.
 sidecar:
   enabled: false
+  # upstreamUrl: the real LLM provider the sidecar forwards redacted requests to.
+  upstreamUrl: "https://api.openai.com"
   image:
     repository: 190239490233.dkr.ecr.ap-southeast-2.amazonaws.com/pii-redaction-sidecar
     tag: "latest"

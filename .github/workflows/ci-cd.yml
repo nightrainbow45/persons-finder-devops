@@ -14,6 +14,7 @@ on:
 env:
   AWS_REGION: ap-southeast-2
   ECR_REPOSITORY: persons-finder
+  ECR_SIDECAR_REPOSITORY: pii-redaction-sidecar
   # KMS key ARN for cosign image signing (ECC_NIST_P256, alias/persons-finder-cosign-prod)
   # Not a secret: ARN is a resource identifier that cannot be used without AWS auth.
   COSIGN_KMS_ARN: arn:aws:kms:ap-southeast-2:190239490233:key/6e0f596a-0608-45de-bf42-d9ddb8ea960f
@@ -180,6 +181,56 @@ jobs:
           --type cyclonedx \
           "$IMAGE_REF"
         echo "SBOM attestation pushed for: $IMAGE_REF"
+
+    # ── PII Redaction Sidecar (Layer 2) ────────────────────────────────
+    - name: Ensure sidecar ECR repository exists
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+      run: |
+        aws ecr create-repository \
+          --repository-name ${{ env.ECR_SIDECAR_REPOSITORY }} \
+          --region ${{ env.AWS_REGION }} \
+          --image-tag-mutability IMMUTABLE \
+          --image-scanning-configuration scanOnPush=true 2>/dev/null \
+          || echo "ECR repository already exists, continuing."
+
+    - name: Build sidecar image
+      run: |
+        SIDECAR_TAG="git-${GITHUB_SHA::7}"
+        SIDECAR_IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_SIDECAR_REPOSITORY }}:${SIDECAR_TAG}"
+        docker build \
+          -f devops/docker/Dockerfile.sidecar \
+          -t "$SIDECAR_IMAGE" \
+          .
+        echo "SIDECAR_IMAGE=$SIDECAR_IMAGE" >> $GITHUB_ENV
+
+    - name: Trivy scan sidecar image (CI gate — CRITICAL/HIGH)
+      run: |
+        trivy image \
+          --severity CRITICAL,HIGH \
+          --ignore-unfixed \
+          --exit-code 1 \
+          --no-progress \
+          "$SIDECAR_IMAGE"
+
+    - name: Push sidecar image to ECR
+      id: push-sidecar
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+      run: |
+        docker push "$SIDECAR_IMAGE"
+        DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$SIDECAR_IMAGE" | cut -d@ -f2)
+        echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+        echo "Sidecar pushed — digest $DIGEST"
+
+    - name: Sign sidecar image with cosign (KMS)
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+      env:
+        COSIGN_YES: "true"
+      run: |
+        SIDECAR_REF="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_SIDECAR_REPOSITORY }}@${{ steps.push-sidecar.outputs.digest }}"
+        cosign sign \
+          --key "awskms:///${{ env.COSIGN_KMS_ARN }}" \
+          "$SIDECAR_REF"
+        echo "Sidecar signed: $SIDECAR_REF"
 
   helm-deploy:
     name: Deploy to EKS

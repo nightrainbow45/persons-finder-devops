@@ -9,7 +9,12 @@ import org.springframework.stereotype.Component
 @Component
 class EnvironmentConfig(
     @Value("\${openai.api-key:}")
-    val openaiApiKey: String
+    val openaiApiKey: String,
+    // LLM_PROXY_URL: when the PII sidecar is enabled, Helm injects this as
+    // "http://localhost:8081" so all LLM calls route through the sidecar proxy.
+    // Defaults to the real provider so the app works without the sidecar (dev/local).
+    @Value("\${llm.proxy-url:https://api.openai.com}")
+    val llmProxyUrl: String = "https://api.openai.com"
 ) {
     private val logger = LoggerFactory.getLogger(EnvironmentConfig::class.java)
 

@@ -111,3 +111,8 @@ docker-compose.override.yml
 # Kiro project tool
 ##############################################
 .kiro/settings/
+
+##############################################
+# Go sidecar build artifacts
+##############################################
+sidecar/pii-sidecar

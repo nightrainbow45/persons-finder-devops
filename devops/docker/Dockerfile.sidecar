@@ -1,0 +1,38 @@
+# ── Stage 1: Build ─────────────────────────────────────────────────────────────
+# Use pinned Go version on Alpine for a minimal, reproducible build environment.
+FROM golang:1.22.4-alpine3.20 AS builder
+
+WORKDIR /build
+
+# Copy module files first so Docker cache is reused when only source changes.
+COPY sidecar/go.mod ./
+RUN go mod download
+
+COPY sidecar/ ./
+
+# Build a statically linked binary — no libc dependency in the final image.
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o pii-sidecar .
+
+# ── Stage 2: Runtime ────────────────────────────────────────────────────────────
+# Minimal Alpine runtime: ~7 MB base image.
+# Pinned to the same minor version as the build stage for consistency.
+FROM alpine:3.20.6
+
+# Create a non-root user and group.
+RUN addgroup -S sidecar && adduser -S sidecar -G sidecar
+
+WORKDIR /app
+
+# Copy only the compiled binary from the build stage.
+COPY --from=builder /build/pii-sidecar .
+
+# Drop to non-root before the process starts.
+USER sidecar
+
+EXPOSE 8081
+
+# UPSTREAM_URL and LISTEN_PORT can be overridden via Helm values → env vars.
+ENV LISTEN_PORT=8081 \
+    UPSTREAM_URL=https://api.openai.com
+
+ENTRYPOINT ["./pii-sidecar"]

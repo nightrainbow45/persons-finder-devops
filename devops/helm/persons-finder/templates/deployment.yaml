@@ -48,6 +48,13 @@ spec:
         env:
         - name: SPRING_PROFILES_ACTIVE
           value: "prod"
+        {{- if .Values.sidecar.enabled }}
+        # When the sidecar is enabled, route all LLM calls through it (localhost)
+        # instead of calling the provider directly. The sidecar redacts PII before
+        # forwarding and restores tokens in the response (Layer 2 defence in depth).
+        - name: LLM_PROXY_URL
+          value: "http://localhost:{{ .Values.sidecar.port }}"
+        {{- end }}
         envFrom:
         - secretRef:
             name: {{ include "persons-finder.fullname" . }}-secrets
@@ -66,12 +73,24 @@ spec:
           containerPort: {{ .Values.sidecar.port }}
           protocol: TCP
         env:
-        - name: PROXY_PORT
+        # LISTEN_PORT: the port this sidecar listens on inside the pod.
+        - name: LISTEN_PORT
           value: "{{ .Values.sidecar.port }}"
-        - name: TARGET_HOST
-          value: "localhost"
-        - name: TARGET_PORT
-          value: "{{ .Values.service.targetPort }}"
+        # UPSTREAM_URL: the real LLM provider this sidecar forwards redacted traffic to.
+        - name: UPSTREAM_URL
+          value: "{{ .Values.sidecar.upstreamUrl }}"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.sidecar.port }}
+          initialDelaySeconds: 5
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.sidecar.port }}
+          initialDelaySeconds: 3
+          periodSeconds: 10
         resources:
           {{- toYaml .Values.sidecar.resources | nindent 12 }}
       {{- end }}
