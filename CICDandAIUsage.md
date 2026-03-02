@@ -20,9 +20,20 @@ The requirement is **fully satisfied** — using real Trivy container scanning (
 
 ### 2.1 CI Pipeline: GitHub Actions
 
-**File:** `.github/workflows/ci-cd.yml`
+**File:** `.github/workflows/ci-cd.yml` (282 lines total)
 
 Three-job pipeline triggered on every push to `main`, `develop`, and `v*.*.*` tags, and on every pull request to `main`:
+
+> `.github/workflows/ci-cd.yml` lines 1–21 (trigger + env block)
+
+```yaml
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*.*.*']
+  pull_request:
+    branches: [main]
+```
 
 ```
 push / pull_request
@@ -45,12 +56,12 @@ push / pull_request
 
 ### 2.2 Security Gate: Trivy (Container Image Scanner)
 
-**Location in pipeline:** `docker-build-and-scan` job, step "Trivy vulnerability scan (CI gate — CRITICAL/HIGH)"
-
 Trivy scans the built Docker image for known CVEs in OS packages and application dependencies **before** the image is pushed to ECR.
 
+> `.github/workflows/ci-cd.yml` lines 102–119 — Install + scan gate (18 lines)
+
 ```yaml
-- name: Install Trivy
+- name: Install Trivy                         # line 102
   run: |
     wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
       | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
@@ -59,7 +70,7 @@ Trivy scans the built Docker image for known CVEs in OS packages and application
       | sudo tee /etc/apt/sources.list.d/trivy.list
     sudo apt-get update -qq && sudo apt-get install -y trivy
 
-- name: Trivy vulnerability scan (CI gate — CRITICAL/HIGH)
+- name: Trivy vulnerability scan (CI gate — CRITICAL/HIGH)   # line 110
   run: |
     trivy image \
       --severity CRITICAL,HIGH \   # only gate on high-impact CVEs
@@ -78,8 +89,10 @@ Trivy scans the built Docker image for known CVEs in OS packages and application
 
 The sidecar container (`pii-redaction-sidecar`, Go binary) is built and scanned independently with the same gate:
 
+> `.github/workflows/ci-cd.yml` lines 206–213 — Sidecar Trivy gate (8 lines)
+
 ```yaml
-- name: Trivy scan sidecar image (CI gate — CRITICAL/HIGH)
+- name: Trivy scan sidecar image (CI gate — CRITICAL/HIGH)   # line 206
   run: |
     trivy image \
       --severity CRITICAL,HIGH \
@@ -137,15 +150,18 @@ Docker image built
 
 Every build produces a Software Bill of Materials in CycloneDX format, stored as a GitHub Actions artifact (90-day retention):
 
+> `.github/workflows/ci-cd.yml` lines 122–137 — SBOM generate + upload (16 lines)
+
 ```yaml
-- name: Generate SBOM (CycloneDX)
+- name: Generate SBOM (CycloneDX)      # line 122
   run: |
     trivy image \
       --format cyclonedx \
       --output sbom.cdx.json \
+      --no-progress \
       "$IMAGE"
 
-- name: Upload SBOM artifact
+- name: Upload SBOM artifact           # line 132
   uses: actions/upload-artifact@v4
   with:
     name: sbom-cyclonedx
@@ -157,14 +173,16 @@ Every build produces a Software Bill of Materials in CycloneDX format, stored as
 
 Images are signed after passing the Trivy gate. The cosign KMS key uses ECC_NIST_P256 (FIPS-compliant elliptic curve):
 
+> `.github/workflows/ci-cd.yml` lines 161–183 — cosign sign + attest (23 lines)
+
 ```yaml
-- name: Sign image with cosign (KMS)
+- name: Sign image with cosign (KMS)      # line 161
   run: |
     cosign sign \
-      --key "awskms:///arn:aws:kms:ap-southeast-2:190239490233:key/6e0f596a-..." \
+      --key "awskms:///${{ env.COSIGN_KMS_ARN }}" \
       "$IMAGE_REF"
 
-- name: Attest SBOM with cosign (KMS)
+- name: Attest SBOM with cosign (KMS)     # line 172
   run: |
     cosign attest \
       --key "awskms:///${{ env.COSIGN_KMS_ARN }}" \
@@ -175,45 +193,82 @@ Images are signed after passing the Trivy gate. The cosign KMS key uses ECC_NIST
 
 ### 3.3 Runtime Enforcement: Kyverno
 
-Kyverno ClusterPolicy in `Enforce` mode blocks any pod creation in the `default` namespace if the image is not cosign-signed with the project's KMS key:
-
-```yaml
-# devops/kyverno/verify-image-signatures.yaml
-spec:
-  validationFailureAction: Enforce   # block (not just audit)
-  rules:
-  - verifyImages:
-    - imageReferences:
-      - "190239490233.dkr.ecr.ap-southeast-2.amazonaws.com/persons-finder:*"
-      - "190239490233.dkr.ecr.ap-southeast-2.amazonaws.com/pii-redaction-sidecar:*"
-```
+Kyverno ClusterPolicy in `Enforce` mode blocks any pod creation in the `default` namespace if the image is not cosign-signed with the project's KMS key.
 
 Even if someone bypasses CI entirely and pushes a tampered image directly to ECR, Kyverno will block its deployment.
 
+> `devops/kyverno/verify-image-signatures.yaml` lines 32–56 — ClusterPolicy spec (25 lines)
+
+```yaml
+spec:                                        # line 32
+  validationFailureAction: Enforce           # line 35 — block (not just audit)
+  background: false
+
+  rules:
+  - name: verify-cosign-signature
+    match:
+      any:
+      - resources:
+          kinds: [Pod]
+          namespaces: [default]
+    verifyImages:                            # line 48
+    - imageReferences:
+      - "190239490233.dkr.ecr.ap-southeast-2.amazonaws.com/persons-finder:*"
+      - "190239490233.dkr.ecr.ap-southeast-2.amazonaws.com/pii-redaction-sidecar:*"
+      mutateDigest: false
+      verifyDigest: false
+```
+
 ### 3.4 Periodic Re-scan
 
-**File:** `.github/workflows/security-rescan.yml`
+Runs every Monday at 02:00 UTC, scanning the 5 most recent `git-*` tagged images against the latest CVE database — catching newly disclosed vulnerabilities in already-deployed images.
 
-Runs every Monday at 02:00 UTC, scanning the 5 most recent `git-*` tagged images against the latest CVE database — catching newly disclosed vulnerabilities in already-deployed images:
+> `.github/workflows/security-rescan.yml` lines 5–8 — schedule trigger (4 lines)
 
 ```yaml
 on:
   schedule:
-    - cron: '0 2 * * 1'   # every Monday 02:00 UTC
+    - cron: '0 2 * * 1'   # line 7 — every Monday 02:00 UTC
+  workflow_dispatch:        # also supports manual trigger
+```
+
+> `.github/workflows/security-rescan.yml` lines 91–105 — scan gate loop (15 lines)
+
+```yaml
+          # Gate: fail on CRITICAL/HIGH unfixed          # line 91
+          if ! trivy image \
+              --severity CRITICAL,HIGH \
+              --ignore-unfixed \
+              --ignorefile .trivyignore \
+              --exit-code 1 \
+              --no-progress \
+              "$IMAGE"; then
+            echo "::error::CRITICAL/HIGH CVEs found in $IMAGE"
+            FAILED=1
+          else
+            echo "No CRITICAL/HIGH unfixed CVEs in $IMAGE"
+          fi
 ```
 
 ### 3.5 CVE Suppression Policy (`.trivyignore`)
 
-Suppressions are documented with rationale and removal conditions:
+Suppressions are documented with rationale and removal conditions. No suppressions apply to the main Spring Boot image — only to Go stdlib CVEs in the sidecar where the fix version is not yet published to Docker Hub.
+
+> `.trivyignore` lines 1–55 (55 lines total)
 
 ```
-# CVE-2025-68121 — CRITICAL — Go crypto/tls
-# Suppressed: no Docker Hub image with golang:1.25.7+ available at time of writing.
-# Remove this entry when golang:1.25.7+ appears on Docker Hub.
+# CVE-2025-68121 — CRITICAL — crypto/tls          # line 39
+# Fixed in Go 1.24.13 / 1.25.7. Exploitable only by a malicious TLS server;
+# sidecar's upstream (api.openai.com) is a controlled, trusted endpoint.
+# Remove when golang:1.25.7+ appears on Docker Hub.
 CVE-2025-68121
+
+# CVE-2025-61726 — HIGH — net/url                 # line 44
+# CVE-2025-61728 — HIGH — archive/zip             # line 49 (sidecar does NOT use zip)
+# CVE-2025-61730 — HIGH — TLS 1.3 handshake       # line 53
 ```
 
-No suppressions are applied to the main Spring Boot application image — only to Go stdlib CVEs in the sidecar where the fix version is not yet published.
+Spring Boot suppressions (lines 1–27) cover `CVE-2016-1000027`, `CVE-2025-22235`, `CVE-2025-41249`, `CVE-2024-38816`, `CVE-2024-38819`, `GHSA-72hv-8253-57qq`, `CVE-2022-1471` — all requiring Spring Boot 3.x upgrade, tracked in backlog.
 
 ---
 
@@ -241,11 +296,11 @@ Total: 0 (CRITICAL: 0, HIGH: 0)
 
 ## 5. File Map
 
-| File | Purpose |
-|---|---|
-| `.github/workflows/ci-cd.yml` | Main pipeline: build → scan → sign → deploy |
-| `.github/workflows/security-rescan.yml` | Weekly re-scan of deployed images |
-| `.trivyignore` | Documented CVE suppressions with removal conditions |
-| `devops/kyverno/verify-image-signatures.yaml` | Runtime enforcement: block unsigned images |
-| `devops/docker/Dockerfile` | Multi-stage main image (gradle → eclipse-temurin:11-jre-alpine) |
-| `devops/docker/Dockerfile.sidecar` | Multi-stage sidecar (golang:1.25-alpine3.21 → alpine:3.21, non-root) |
+| File | Lines | Purpose |
+|---|---|---|
+| `.github/workflows/ci-cd.yml` | 282 | Main pipeline: build → scan → sign → deploy |
+| `.github/workflows/security-rescan.yml` | 121 | Weekly re-scan of deployed images |
+| `.trivyignore` | 55 | Documented CVE suppressions with removal conditions |
+| `devops/kyverno/verify-image-signatures.yaml` | 67 | Runtime enforcement: block unsigned images |
+| `devops/docker/Dockerfile` | — | Multi-stage main image (gradle → eclipse-temurin:11-jre-alpine) |
+| `devops/docker/Dockerfile.sidecar` | — | Multi-stage sidecar (golang:1.25-alpine3.21 → alpine:3.21, non-root) |
