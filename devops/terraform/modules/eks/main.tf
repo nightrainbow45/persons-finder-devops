@@ -66,6 +66,14 @@ resource "aws_eks_addon" "vpc_cni" {
   cluster_name = aws_eks_cluster.main.name
   addon_name   = "vpc-cni"
 
+  # Enable the AWS Network Policy Agent so that Kubernetes NetworkPolicy objects
+  # are actually enforced at the kernel level (eBPF via aws-network-policy-agent).
+  # Without this flag the NetworkPolicy objects exist in etcd but have zero effect.
+  # Requires VPC CNI v1.14+ and EKS 1.25+. The agent runs as a sidecar in aws-node.
+  configuration_values = jsonencode({
+    enableNetworkPolicy = "true"
+  })
+
   resolve_conflicts_on_update = "OVERWRITE"
 
   tags = var.tags

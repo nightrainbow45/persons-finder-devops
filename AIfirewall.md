@@ -202,7 +202,7 @@ Init Container (iptables)
 
 **What it is:** Kubernetes NetworkPolicy enforced by the CNI (AWS VPC CNI + network policy controller). Operates at kernel level — no application code can bypass it.
 
-**Status:** `networkPolicy.enabled: true` in `values-prod.yaml` ✅
+**Status:** ✅ Fully configured. Egress rules corrected with external HTTPS allowance. AWS VPC CNI Network Policy Agent enabled via Terraform (`enableNetworkPolicy = "true"` on the vpc-cni addon), so policies are enforced at the kernel level (eBPF).
 
 ### Policy design
 
@@ -239,10 +239,20 @@ spec:
     - to:
       - podSelector: {}
 
-    # External LLM API — only this FQDN allowed
-    # NOTE: requires DNS-based NetworkPolicy or IP-based allowlist
-    # Recommended: use an AWS Security Group rule for api.openai.com IP range
-    # OR deploy an egress proxy (squid/envoy) that resolves and allows by FQDN
+    # External HTTPS — api.openai.com, ECR, STS (IRSA), EKS control plane
+    # K8s NetworkPolicy is IP-based, not FQDN-based.
+    # This rule allows TCP:443 to any public IP (non-RFC1918).
+    # PII protection is enforced by Layer 1 + Layer 2 before traffic reaches here.
+    - to:
+      - ipBlock:
+          cidr: 0.0.0.0/0
+          except:
+            - 10.0.0.0/8
+            - 172.16.0.0/12
+            - 192.168.0.0/16
+    ports:
+    - protocol: TCP
+      port: 443
 ```
 
 ### Limitation: Kubernetes NetworkPolicy is IP-based, not FQDN-based
@@ -366,8 +376,9 @@ cosign sign --key awskms:///alias/persons-finder-cosign-prod \
 | Sidecar CI build + sign | 2 | ✅ Configured | `.github/workflows/ci-cd.yml` |
 | Sidecar IAM ECR push | 2 | ✅ Configured | `terraform/environments/prod/main.tf` |
 | Sidecar CVE policy | 2 | ✅ `.trivyignore` (4 Go stdlib CVEs, remove when golang:1.25.7+ on Docker Hub) | `.trivyignore` |
-| NetworkPolicy | 3 | ✅ Enabled in prod | `values-prod.yaml` |
-| FQDN-based egress proxy | 3 | 🔲 Optional enhancement | — |
+| NetworkPolicy egress rules | 3 | ✅ Fixed (DNS + internal + external HTTPS) | `values.yaml` |
+| VPC CNI Network Policy Agent | 3 | ✅ `enableNetworkPolicy=true` in Terraform | `modules/eks/main.tf` |
+| FQDN-based egress proxy | 3 | 🔲 Optional enhancement (Squid/Envoy) | — |
 | CloudWatch log group | 4 | ✅ Via Fluent Bit | `/eks/persons-finder/pii-audit` |
 | Grafana PII dashboard | 4 | 🔲 To configure | — |
 | Kyverno (image signing) | 4 | ✅ Enforce mode | `devops/kyverno/` |

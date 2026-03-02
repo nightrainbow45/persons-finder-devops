@@ -124,15 +124,31 @@ networkPolicy:
           matchLabels:
             name: ingress-nginx
   egress:
+    # DNS: allow UDP/TCP 53 to kube-dns pods in any namespace
     - to:
       - namespaceSelector: {}
       ports:
-      - protocol: TCP
-        port: 53
       - protocol: UDP
         port: 53
+      - protocol: TCP
+        port: 53
+    # Internal: allow all traffic to pods in the same namespace
     - to:
       - podSelector: {}
+    # External HTTPS: allow TCP 443 to public IPs only.
+    # Covers: api.openai.com, ECR, STS (IRSA), EKS control plane endpoint.
+    # Note: K8s NetworkPolicy cannot filter by FQDN; this allows any public IP on 443.
+    # For FQDN-level enforcement, deploy an egress proxy (see AIfirewall.md Layer 3).
+    - to:
+      - ipBlock:
+          cidr: 0.0.0.0/0
+          except:
+            - 10.0.0.0/8
+            - 172.16.0.0/12
+            - 192.168.0.0/16
+      ports:
+      - protocol: TCP
+        port: 443
 
 # RBAC
 rbac:

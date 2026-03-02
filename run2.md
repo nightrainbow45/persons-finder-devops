@@ -1,9 +1,10 @@
-# Session 4+5 运行记录 / Run Log
+# Session 4+5+6 运行记录 / Run Log
 
 > 日期：2026-03-01
 > 分支：main
 > Session 4 目标：实现完整安全扫描套件（SBOM / cosign 镜像签名 / Kyverno 准入策略 / 定期重扫）
 > Session 5 目标：配置 IRSA，激活 Kyverno Enforce 模式
+> Session 6 目标：更新 devops scripts，执行 terraform destroy 销毁全部 AWS 资源
 
 ---
 
@@ -21,6 +22,9 @@
 
 ### Session 5 指令
 > 继续把 Kyverno 激活，配置 IRSA
+
+### Session 6 指令
+> 更新 script 里面的脚本，更新完了之后运行 destroy 脚本将所有资源摧毁并且确认
 
 ---
 
@@ -488,6 +492,177 @@ ECR 仓库使用 `IMMUTABLE` tag 策略，同一个 tag 永远指向同一个镜
 
 ---
 
+## 四-B、Session 6：脚本更新 + 全量资源销毁
+
+### 6.1 现有脚本的问题
+
+在运行销毁之前，先审查了 `devops/scripts/` 下全部 5 个脚本，发现它们都落后于实际搭建的 prod 环境：
+
+| 脚本 | 主要问题 |
+|---|---|
+| `teardown-eks.sh` | app namespace 写死 `${ENVIRONMENT}`（prod 实际在 `default`）；缺少 Kyverno ClusterPolicy 删除步骤（若不先删会阻断后续 pod 终止）；缺少 ESO/Kyverno Helm 卸载；未传递 tfvars |
+| `setup-eks.sh` | 未传递 `terraform.tfvars`；缺少 Kyverno 安装、IRSA 注解、ClusterPolicy 部署、ESO 安装等步骤 |
+| `deploy.sh` | prod namespace 映射错误（应为 `default`）；未加 `--set secrets.create=false`（prod 使用 ESO 管理 secret） |
+| `verify.sh` | namespace 映射错误；缺少 Kyverno ClusterPolicy 检查和 ESO 状态检查 |
+
+---
+
+### 6.2 脚本更新内容
+
+#### teardown-eks.sh（最重要，销毁前提）
+
+**销毁顺序（避免资源依赖导致失败）：**
+
+```
+Step 1: 更新 kubeconfig（若集群不可达则跳过 K8s 步骤）
+Step 2: 删除 Kyverno ClusterPolicy   ← 必须最先删，否则 webhook 阻断后续操作
+Step 3: Helm uninstall persons-finder（default namespace）
+Step 4: 删除 ESO 资源（ExternalSecret, ClusterSecretStore）
+Step 5: Helm uninstall external-secrets
+Step 6: 删除 Kyverno webhook，Helm uninstall kyverno
+Step 7: terraform destroy -var-file=terraform.tfvars
+```
+
+**关键修复：**
+```bash
+# namespace 映射（新增）
+if [[ "${ENVIRONMENT}" == "prod" ]]; then
+  APP_NAMESPACE="default"
+else
+  APP_NAMESPACE="${ENVIRONMENT}"
+fi
+
+# tfvars 自动检测（新增）
+TF_VAR_ARGS=()
+if [[ -f "${TF_VARS}" ]]; then
+  TF_VAR_ARGS=(-var-file="${TF_VARS}")
+fi
+terraform -chdir="${TF_DIR}" destroy -auto-approve "${TF_VAR_ARGS[@]+"${TF_VAR_ARGS[@]}"}"
+```
+
+#### deploy.sh
+
+```bash
+# 新增 namespace 映射
+if [[ "${ENVIRONMENT}" == "prod" ]]; then
+  NAMESPACE="default"
+else
+  NAMESPACE="${ENVIRONMENT}"
+fi
+
+# 新增 secrets.create 自动判断
+SECRETS_FLAG="--set secrets.create=false"  # prod: ESO 管理
+if [[ "${ENVIRONMENT}" == "dev" ]]; then
+  SECRETS_FLAG="--set secrets.create=true"
+fi
+```
+
+#### verify.sh
+
+新增以下检查项（仅 prod）：
+
+```bash
+# Kyverno
+check "ClusterPolicy 'verify-image-signatures' exists"
+check "ClusterPolicy in Enforce mode"
+check "Kyverno admission-controller running"
+
+# ESO
+check "ClusterSecretStore exists"
+check "ExternalSecret exists"
+```
+
+---
+
+### 6.3 执行销毁过程
+
+**按顺序手动执行（与更新后的 teardown-eks.sh 逻辑一致）：**
+
+#### 步骤 1：删除 Kyverno ClusterPolicy
+```bash
+kubectl delete clusterpolicy verify-image-signatures --ignore-not-found
+# → clusterpolicy.kyverno.io "verify-image-signatures" deleted
+```
+
+#### 步骤 2：卸载 persons-finder
+```bash
+helm uninstall persons-finder -n default --wait --timeout 3m
+# → release "persons-finder" uninstalled
+```
+
+#### 步骤 3：删除 ESO 资源
+```bash
+kubectl delete externalsecret --all -A --ignore-not-found
+# → externalsecret.external-secrets.io "persons-finder-secrets" deleted from default namespace
+kubectl delete clustersecretstore --all --ignore-not-found
+# → clustersecretstore.external-secrets.io "aws-secrets-manager" deleted
+```
+
+#### 步骤 4：卸载 external-secrets
+```bash
+helm uninstall external-secrets -n external-secrets --wait --timeout 3m
+# → release "external-secrets" uninstalled
+```
+
+#### 步骤 5：删除 Kyverno webhooks + 卸载 kyverno
+```bash
+kubectl delete validatingwebhookconfiguration -l "app.kubernetes.io/instance=kyverno" --ignore-not-found
+kubectl delete mutatingwebhookconfiguration -l "app.kubernetes.io/instance=kyverno" --ignore-not-found
+helm uninstall kyverno -n kyverno --wait --timeout 3m
+# → release "kyverno" uninstalled
+```
+
+#### 步骤 6：Terraform destroy
+```bash
+cd devops/terraform/environments/prod
+terraform init -input=false
+terraform destroy -auto-approve -var-file=terraform.tfvars
+```
+
+**输出（尾部）：**
+```
+module.eks.aws_eks_cluster.main: Still destroying... [id=persons-finder-prod, 03m05s elapsed]
+module.eks.aws_eks_cluster.main: Destruction complete after 3m5s
+...
+module.vpc.aws_vpc.main: Destruction complete after 0s
+
+Destroy complete! Resources: 60 destroyed.
+```
+
+**Terraform state 确认为空：**
+```bash
+terraform state list
+# （无输出）
+```
+
+---
+
+### 6.4 销毁后 AWS 资源确认
+
+```bash
+aws eks list-clusters --region ap-southeast-2 --query 'clusters'
+# → (空)
+
+aws ecr describe-repositories --region ap-southeast-2 --query 'repositories[].repositoryName'
+# → (空)
+
+aws ec2 describe-vpcs --filters "Name=tag:Project,Values=persons-finder" --query 'Vpcs[].VpcId'
+# → (空)
+
+aws iam list-roles --query 'Roles[?contains(RoleName,`persons-finder`)].RoleName'
+# → (空)
+
+aws kms list-aliases --region ap-southeast-2 --query 'Aliases[?contains(AliasName,`persons-finder`)].AliasName'
+# → (空)
+
+aws secretsmanager list-secrets --region ap-southeast-2 --query 'SecretList[?contains(Name,`persons-finder`)].Name'
+# → (空)
+```
+
+**全部 60 个 Terraform 资源销毁完毕，AWS 账户已回到初始状态。**
+
+---
+
 ## 五、最终 CI/CD 流水线结构
 
 ```
@@ -592,15 +767,21 @@ push to main / push v*.*.* tag
 | `11a4e5f` | 4 | fix(helm): maxSurge=0 解决 t3.small pod 上限死锁 |
 | `0dd386e` | 4 | docs: add run2.md |
 | `5e1e31f` | 5 | feat(irsa): configure IRSA for Kyverno and activate Enforce signature policy |
+| `61a20ad` | 5 | docs: update run2.md with Session 5 IRSA + Enforce policy activation |
+| `f53edb4` | 6 | fix(scripts): update all devops scripts to reflect prod infrastructure |
 
 ---
 
 ## 十、已知限制与后续改进
 
+> ⚠️ Session 6 完成后，所有 AWS 资源已通过 `terraform destroy` 销毁（60 个资源）。
+> 下次重新部署时使用 `./devops/scripts/setup-eks.sh prod` 重建环境。
+
 | 限制 | 当前状态 | 推荐方案 |
 |------|---------|---------|
-| t3.small pod 上限 11 | coredns=1副本，kyverno reports/cleanup-controller=0 | 升级节点规格或多节点 |
-| ENI prefix delegation | 无法在线切换，需节点重建 | 替换 EC2 实例后生效 |
-| 滚动更新有短暂中断 | maxSurge=0 策略 | 扩展为多节点后恢复 maxSurge=1 |
-| cosign SBOM attestation 验证 | 证明已推送到 ECR，Kyverno 策略未校验 attestation | 在 ClusterPolicy 中添加 `attestations` 字段验证 SBOM |
-| Kyverno reports-controller 禁用 | 无法生成 PolicyReport | 升级节点后重新启用（`kubectl scale deployment kyverno-reports-controller --replicas=1 -n kyverno`） |
+| t3.small pod 上限 11 | 已销毁（记录供下次参考） | 升级到 t3.medium（17 pods）或多节点 |
+| ENI prefix delegation | 需节点重建才能生效 | 下次部署时在 TF 配置中预先开启 |
+| 滚动更新有短暂中断 | maxSurge=0（代码已修复，保留） | 扩展为多节点后恢复 maxSurge=1 |
+| cosign SBOM attestation 验证 | SBOM 已推送到 ECR，Kyverno 策略未校验 | 在 ClusterPolicy 中添加 `attestations` 字段验证 SBOM |
+| Kyverno reports/cleanup-controller | 已禁用（应对 pod 上限） | 升级节点后重新启用 |
+| dev 环境 | 从未创建过 | 如需隔离测试环境，运行 `./devops/scripts/setup-eks.sh dev` |
