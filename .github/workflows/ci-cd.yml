@@ -259,6 +259,7 @@ jobs:
 
     - name: Deploy with Helm
       run: |
+        kubectl create namespace persons-finder --dry-run=client -o yaml | kubectl apply -f -
         if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
           IMAGE_TAG="${GITHUB_REF_NAME#v}"   # v1.4.2 → 1.4.2
         else
@@ -274,7 +275,6 @@ jobs:
           --set sidecar.enabled=true \
           --set sidecar.image.tag="${IMAGE_TAG}" \
           --namespace persons-finder \
-          --create-namespace \
           --wait --timeout 3m
 
     - name: Verify deployment
