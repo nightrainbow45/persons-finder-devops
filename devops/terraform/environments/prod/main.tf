@@ -131,9 +131,8 @@ module "eks" {
   cluster_security_group_id = module.vpc.eks_cluster_security_group_id
   node_security_group_id    = module.vpc.eks_nodes_security_group_id
 
-  # Demo: smallest viable EKS node (t3.small = 2GiB, Free Tier Eligible) with SPOT for cost savings
   node_instance_type = "t3.small"
-  capacity_type      = "SPOT"
+  capacity_type      = "ON_DEMAND"
   node_desired_count = 1
   node_min_count     = 1
   node_max_count     = 3
