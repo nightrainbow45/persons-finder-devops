@@ -273,10 +273,11 @@ jobs:
           --set networkPolicy.enabled=true \
           --set sidecar.enabled=true \
           --set sidecar.image.tag="${IMAGE_TAG}" \
-          --namespace default \
+          --namespace persons-finder \
+          --create-namespace \
           --wait --timeout 3m
 
     - name: Verify deployment
       run: |
-        kubectl rollout status deployment/persons-finder -n default
-        kubectl get pods -n default -o wide
+        kubectl rollout status deployment/persons-finder -n persons-finder
+        kubectl get pods -n persons-finder -o wide
