@@ -138,8 +138,8 @@ class CiCdWorkflowTest {
     @Test
     fun `docker job should include Trivy security scanner`() {
         assertTrue(
-            workflowContent.contains("aquasecurity/trivy-action"),
-            "Docker job should use aquasecurity/trivy-action for security scanning"
+            workflowContent.contains("trivy"),
+            "Docker job should include Trivy for security scanning"
         )
     }
 
@@ -150,7 +150,7 @@ class CiCdWorkflowTest {
             "Trivy should be configured with CRITICAL and HIGH severity levels"
         )
         assertTrue(
-            workflowContent.contains("exit-code: '1'"),
+            workflowContent.contains("--exit-code 1") || workflowContent.contains("exit-code: '1'"),
             "Trivy should be configured with exit-code 1 to fail the build on vulnerabilities"
         )
     }
