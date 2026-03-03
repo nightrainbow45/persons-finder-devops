@@ -266,14 +266,16 @@ jobs:
           IMAGE_TAG="git-${GITHUB_SHA::7}"   # main branch → git-e087a9d
         fi
         helm upgrade --install persons-finder devops/helm/persons-finder/ \
+          -f devops/helm/persons-finder/production-values.yaml \
           --set image.tag="${IMAGE_TAG}" \
+          --set replicaCount=1 \
           --set autoscaling.enabled=true \
           --set autoscaling.minReplicas=1 \
           --set autoscaling.maxReplicas=3 \
           --set secrets.create=false \
-          --set networkPolicy.enabled=true \
           --set sidecar.enabled=true \
           --set sidecar.image.tag="${IMAGE_TAG}" \
+          --set swagger.basicAuth.enabled=false \
           --namespace persons-finder \
           --wait --timeout 3m
 
