@@ -42,9 +42,9 @@ The app sends user PII (names, bios) to an external LLM provider.
 
 | Item | Value |
 |---|---|
-| **URL** | https://aifindy.digico.cloud |
-| **Swagger UI** | https://aifindy.digico.cloud/swagger-ui/index.html |
-| **OpenAPI spec** | https://aifindy.digico.cloud/v3/api-docs |
+| **URL** | `[redacted]` |
+| **Swagger UI** | `[redacted]/swagger-ui/index.html` |
+| **OpenAPI spec** | `[redacted]/v3/api-docs` |
 | **Cluster** | AWS EKS `persons-finder-prod`, `ap-southeast-2` |
 | **Nodes** | 3 × t3.small ON_DEMAND — 1 system node + 2 app nodes (`persons-finder-nodes-prod`) |
 | **TLS** | Let's Encrypt via cert-manager, auto-renewed |
