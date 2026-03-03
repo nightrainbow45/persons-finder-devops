@@ -133,9 +133,9 @@ module "eks" {
 
   node_instance_type = "t3.small"
   capacity_type      = "ON_DEMAND"
-  node_desired_count = 1
-  node_min_count     = 1
-  node_max_count     = 3
+  node_desired_count = 2
+  node_min_count     = 2
+  node_max_count     = 4
 
   cluster_log_types = ["audit"]
 
