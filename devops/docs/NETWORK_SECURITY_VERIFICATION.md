@@ -80,7 +80,7 @@ kubectl describe clusterissuer letsencrypt-prod
 
 ```bash
 # Replace api.example.com with your actual domain
-DOMAIN="api.example.com"
+DOMAIN="aifindy.digico.cloud"
 
 # Check DNS resolution
 nslookup $DOMAIN
@@ -99,7 +99,7 @@ kubectl get ingress -n <namespace>
 # Deploy with production values (includes TLS)
 helm upgrade persons-finder ./devops/helm/persons-finder \
   -f devops/helm/persons-finder/production-values.yaml \
-  --namespace production \
+  --namespace persons-finder \
   --create-namespace
 ```
 
@@ -107,24 +107,24 @@ helm upgrade persons-finder ./devops/helm/persons-finder \
 
 ```bash
 # Check Certificate resource
-kubectl get certificate -n production
+kubectl get certificate -n persons-finder
 
 # Expected output:
 # NAME                   READY   SECRET                 AGE
 # persons-finder-tls     True    persons-finder-tls     5m
 
 # Get certificate details
-kubectl describe certificate persons-finder-tls -n production
+kubectl describe certificate persons-finder-tls -n persons-finder
 
 # Check certificate secret
-kubectl get secret persons-finder-tls -n production
+kubectl get secret persons-finder-tls -n persons-finder
 ```
 
 ### 6. Test HTTPS Access
 
 ```bash
 # Test HTTPS access
-curl -v https://api.example.com/actuator/health
+curl -v https://aifindy.digico.cloud/actuator/health
 
 # Expected output should include:
 # * SSL connection using TLSv1.3 / TLS_AES_256_GCM_SHA384
@@ -184,14 +184,14 @@ openssl s_client -connect api.example.com:443 -tls1_1 < /dev/null
 
 ```bash
 # Check if NetworkPolicy is deployed
-kubectl get networkpolicy -n production
+kubectl get networkpolicy -n persons-finder
 
 # Expected output:
 # NAME                        POD-SELECTOR                      AGE
 # persons-finder              app.kubernetes.io/name=persons-finder   5m
 
 # Get NetworkPolicy details
-kubectl describe networkpolicy persons-finder -n production
+kubectl describe networkpolicy persons-finder -n persons-finder
 ```
 
 ### 2. Test Ingress Rules
@@ -204,7 +204,7 @@ INGRESS_NS="ingress-nginx"
 
 # Test access from Ingress controller
 kubectl run test-ingress -n $INGRESS_NS --rm -it --image=curlimages/curl -- \
-  curl -v http://persons-finder.production.svc.cluster.local/actuator/health
+  curl -v http://persons-finder.persons-finder.svc.cluster.local/actuator/health
 
 # Expected: Should succeed (200 OK)
 ```
@@ -214,7 +214,7 @@ kubectl run test-ingress -n $INGRESS_NS --rm -it --image=curlimages/curl -- \
 ```bash
 # Create a test pod in a different namespace
 kubectl run test-blocked -n default --rm -it --image=curlimages/curl -- \
-  curl -v --max-time 5 http://persons-finder.production.svc.cluster.local/actuator/health
+  curl -v --max-time 5 http://persons-finder.persons-finder.svc.cluster.local/actuator/health
 
 # Expected: Should timeout or be blocked
 # If NetworkPolicy is working correctly, this should fail
@@ -226,9 +226,9 @@ kubectl run test-blocked -n default --rm -it --image=curlimages/curl -- \
 
 ```bash
 # Test DNS resolution from application pod
-POD_NAME=$(kubectl get pods -n production -l app.kubernetes.io/name=persons-finder -o jsonpath='{.items[0].metadata.name}')
+POD_NAME=$(kubectl get pods -n persons-finder -l app.kubernetes.io/name=persons-finder -o jsonpath='{.items[0].metadata.name}')
 
-kubectl exec -n production $POD_NAME -- nslookup google.com
+kubectl exec -n persons-finder $POD_NAME -- nslookup google.com
 
 # Expected: Should succeed (DNS resolution works)
 ```
@@ -237,7 +237,7 @@ kubectl exec -n production $POD_NAME -- nslookup google.com
 
 ```bash
 # Test HTTPS access to external API
-kubectl exec -n production $POD_NAME -- curl -v --max-time 10 https://api.openai.com
+kubectl exec -n persons-finder $POD_NAME -- curl -v --max-time 10 https://api.openai.com
 
 # Expected: Should succeed (HTTPS egress allowed)
 ```
@@ -246,7 +246,7 @@ kubectl exec -n production $POD_NAME -- curl -v --max-time 10 https://api.openai
 
 ```bash
 # Test HTTP access to external site (should be blocked)
-kubectl exec -n production $POD_NAME -- curl -v --max-time 5 http://example.com
+kubectl exec -n persons-finder $POD_NAME -- curl -v --max-time 5 http://example.com
 
 # Expected: Should timeout or fail (only HTTPS allowed)
 ```
@@ -255,7 +255,7 @@ kubectl exec -n production $POD_NAME -- curl -v --max-time 5 http://example.com
 
 ```bash
 # Test access to internal IP (should be blocked)
-kubectl exec -n production $POD_NAME -- curl -v --max-time 5 http://10.0.0.1
+kubectl exec -n persons-finder $POD_NAME -- curl -v --max-time 5 http://10.0.0.1
 
 # Expected: Should timeout or fail (internal IPs blocked)
 ```
@@ -264,14 +264,14 @@ kubectl exec -n production $POD_NAME -- curl -v --max-time 5 http://10.0.0.1
 
 ```bash
 # Test communication between pods in the same namespace
-POD1=$(kubectl get pods -n production -l app.kubernetes.io/name=persons-finder -o jsonpath='{.items[0].metadata.name}')
-POD2=$(kubectl get pods -n production -l app.kubernetes.io/name=persons-finder -o jsonpath='{.items[1].metadata.name}')
+POD1=$(kubectl get pods -n persons-finder -l app.kubernetes.io/name=persons-finder -o jsonpath='{.items[0].metadata.name}')
+POD2=$(kubectl get pods -n persons-finder -l app.kubernetes.io/name=persons-finder -o jsonpath='{.items[1].metadata.name}')
 
 # Get Pod2 IP
-POD2_IP=$(kubectl get pod -n production $POD2 -o jsonpath='{.status.podIP}')
+POD2_IP=$(kubectl get pod -n persons-finder $POD2 -o jsonpath='{.status.podIP}')
 
 # Test connection from Pod1 to Pod2
-kubectl exec -n production $POD1 -- curl -v --max-time 5 http://$POD2_IP:8080/actuator/health
+kubectl exec -n persons-finder $POD1 -- curl -v --max-time 5 http://$POD2_IP:8080/actuator/health
 
 # Expected: Should succeed (pod-to-pod communication allowed)
 ```
@@ -342,9 +342,9 @@ curl -I https://api.example.com/actuator/health
 
 ```bash
 # Get pod details
-POD_NAME=$(kubectl get pods -n production -l app.kubernetes.io/name=persons-finder -o jsonpath='{.items[0].metadata.name}')
+POD_NAME=$(kubectl get pods -n persons-finder -l app.kubernetes.io/name=persons-finder -o jsonpath='{.items[0].metadata.name}')
 
-kubectl get pod -n production $POD_NAME -o yaml | grep -A 10 securityContext
+kubectl get pod -n persons-finder $POD_NAME -o yaml | grep -A 10 securityContext
 
 # Expected output should include:
 # securityContext:
@@ -361,7 +361,7 @@ kubectl get pod -n production $POD_NAME -o yaml | grep -A 10 securityContext
 
 ```bash
 # Check user ID inside container
-kubectl exec -n production $POD_NAME -- id
+kubectl exec -n persons-finder $POD_NAME -- id
 
 # Expected output:
 # uid=1000 gid=1000 groups=1000
@@ -372,7 +372,7 @@ kubectl exec -n production $POD_NAME -- id
 
 ```bash
 # Check capabilities
-kubectl exec -n production $POD_NAME -- cat /proc/1/status | grep Cap
+kubectl exec -n persons-finder $POD_NAME -- cat /proc/1/status | grep Cap
 
 # Expected: All capabilities should be 0 or minimal
 ```
@@ -446,7 +446,7 @@ kubectl exec -n production $POD_NAME -- cat /proc/1/status | grep Cap
 **Diagnosis:**
 ```bash
 # Check certificate status
-kubectl describe certificate persons-finder-tls -n production
+kubectl describe certificate persons-finder-tls -n persons-finder
 
 # Check cert-manager logs
 kubectl logs -n cert-manager -l app=cert-manager
@@ -474,10 +474,10 @@ kubectl logs -n cert-manager -l app=cert-manager
 **Diagnosis:**
 ```bash
 # Check NetworkPolicy rules
-kubectl describe networkpolicy persons-finder -n production
+kubectl describe networkpolicy persons-finder -n persons-finder
 
 # Check pod logs for connection errors
-kubectl logs -n production $POD_NAME
+kubectl logs -n persons-finder $POD_NAME
 ```
 
 **Common Causes:**
@@ -502,13 +502,13 @@ kubectl logs -n production $POD_NAME
 **Diagnosis:**
 ```bash
 # Check if secret exists
-kubectl get secret persons-finder-basic-auth -n production
+kubectl get secret persons-finder-basic-auth -n persons-finder
 
 # Check secret content
-kubectl get secret persons-finder-basic-auth -n production -o yaml
+kubectl get secret persons-finder-basic-auth -n persons-finder -o yaml
 
 # Check Ingress annotations
-kubectl get ingress persons-finder -n production -o yaml | grep -A 5 annotations
+kubectl get ingress persons-finder -n persons-finder -o yaml | grep -A 5 annotations
 ```
 
 **Common Causes:**
@@ -556,7 +556,7 @@ curl -v -X OPTIONS https://api.example.com/api/v1/persons \
 **Diagnosis:**
 ```bash
 # Check Ingress annotations
-kubectl get ingress persons-finder -n production -o yaml | grep whitelist
+kubectl get ingress persons-finder -n persons-finder -o yaml | grep whitelist
 
 # Check your current IP
 curl https://ifconfig.me
@@ -580,10 +580,10 @@ curl https://ifconfig.me
 
 ```bash
 # Monitor certificate expiration
-kubectl get certificate -n production -w
+kubectl get certificate -n persons-finder -w
 
 # Monitor failed authentication attempts
-kubectl logs -n production -l app.kubernetes.io/name=persons-finder | grep "401"
+kubectl logs -n persons-finder -l app.kubernetes.io/name=persons-finder | grep "401"
 
 # Monitor NetworkPolicy violations
 # (Requires network policy logging enabled)

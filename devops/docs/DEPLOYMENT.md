@@ -25,6 +25,37 @@ terraform --version
 aws --version
 ```
 
+## Live Cluster Status
+
+### Nodes (3 × t3.small ON_DEMAND, max 11 pods each)
+
+| Node | Node Group | AZ | Taint | Pods | CPU Used | Mem Used |
+|------|------------|----|-------|------|----------|----------|
+| `ip-10-1-2-119` | `persons-finder-nodes-prod` | ap-southeast-2a | none | 8/11 | 400m (20%) | 292Mi (20%) |
+| `ip-10-1-3-167` | `system-nodes-prod` | ap-southeast-2b | `system=true:NoSchedule` | 4/11 | 300m (15%) | 190Mi (13%) |
+| `ip-10-1-3-25` | `persons-finder-nodes-prod` | ap-southeast-2b | none | 8/11 | 650m (33%) | 810Mi (56%) |
+
+> Node 2 (`system-nodes-prod`) is tainted — only system pods with matching tolerations schedule there.
+
+### Deployments (11 total, all 1/1 Ready)
+
+| Namespace | Deployment | Purpose |
+|-----------|-----------|---------|
+| `persons-finder` | `persons-finder` | Spring Boot API + PII Redaction Sidecar (2 containers) |
+| `cert-manager` | cert-manager × 3 | TLS certificate lifecycle (Let's Encrypt) |
+| `external-secrets` | external-secrets × 3 | Sync OPENAI_API_KEY from AWS Secrets Manager |
+| `ingress-nginx` | ingress-nginx-controller | External HTTPS entry point, TLS termination |
+| `kube-system` | coredns | In-cluster DNS |
+| `kyverno` | kyverno × 2 | Image signature policy (Enforce mode) |
+
+### Key Pod: `persons-finder` (namespace: `persons-finder`)
+
+```
+persons-finder-<sha>   2/2   Running   persons-finder namespace
+  ├── persons-finder          Spring Boot REST API (port 8080)
+  └── pii-redaction-sidecar   Go PII proxy (port 8081)
+```
+
 ## Project Structure
 
 ```
@@ -65,8 +96,8 @@ The Helm chart is located at `devops/helm/persons-finder/` and packages all Kube
 | `service.port` | `80` | Service port |
 | `service.targetPort` | `8080` | Container port |
 | `autoscaling.enabled` | `true` | Enable HPA |
-| `autoscaling.minReplicas` | `2` | Minimum replicas |
-| `autoscaling.maxReplicas` | `10` | Maximum replicas |
+| `autoscaling.minReplicas` | `1` | Minimum replicas |
+| `autoscaling.maxReplicas` | `3` | Maximum replicas |
 | `autoscaling.targetCPUUtilizationPercentage` | `70` | CPU scale-up threshold |
 | `resources.requests.cpu` | `250m` | CPU request |
 | `resources.requests.memory` | `512Mi` | Memory request |
@@ -278,7 +309,7 @@ curl https://aifindy.digico.cloud/v3/api-docs | jq .
 Without Ingress (local port-forward):
 
 ```bash
-kubectl port-forward svc/persons-finder 8080:80 -n default
+kubectl port-forward svc/persons-finder 8080:80 -n persons-finder
 open http://localhost:8080/swagger-ui/index.html
 ```
 
@@ -295,8 +326,8 @@ helm upgrade persons-finder ./devops/helm/persons-finder \
 cert-manager automatically provisions and renews a Let's Encrypt certificate when Ingress TLS is enabled. Check certificate status:
 
 ```bash
-kubectl get certificate -n default
-kubectl describe certificate persons-finder-tls -n default
+kubectl get certificate -n persons-finder
+kubectl describe certificate persons-finder-tls -n persons-finder
 # Ready: True  →  certificate is valid and current
 ```
 

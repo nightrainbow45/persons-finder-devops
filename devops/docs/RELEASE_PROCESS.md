@@ -94,7 +94,7 @@ kubectl get deployment persons-finder -n persons-finder -o jsonpath='{.spec.temp
 curl https://aifindy.digico.cloud/actuator/health
 
 # 访问 Swagger UI
-open https://aifindy.digico.cloud/swagger-ui.html
+open https://aifindy.digico.cloud/swagger-ui/index.html
 ```
 
 ## 镜像标签策略

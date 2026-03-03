@@ -5,6 +5,8 @@ on:
     branches:
       - main
       - develop
+    tags:
+      - 'v*.*.*'        # semver 发布触发：v1.4.2 → image tag 1.4.2
   pull_request:
     branches:
       - main
@@ -12,39 +14,43 @@ on:
 env:
   AWS_REGION: ap-southeast-2
   ECR_REPOSITORY: persons-finder
-  
+  ECR_SIDECAR_REPOSITORY: pii-redaction-sidecar
+  # KMS key ARN for cosign image signing (ECC_NIST_P256, alias/persons-finder-cosign-prod)
+  # Not a secret: ARN is a resource identifier that cannot be used without AWS auth.
+  COSIGN_KMS_ARN: arn:aws:kms:ap-southeast-2:190239490233:key/6e0f596a-0608-45de-bf42-d9ddb8ea960f
+
 jobs:
   build-and-test:
     name: Build and Test
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
+
     - name: Set up JDK 11
       uses: actions/setup-java@v4
       with:
         java-version: '11'
         distribution: 'temurin'
         cache: 'gradle'
-        
+
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
-      
+
     - name: Build with Gradle
       run: ./gradlew clean build -x test
-      
+
     - name: Run tests
       run: ./gradlew test
-      
+
     - name: Upload test results
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: test-results
         path: build/test-results/
-        
+
   docker-build-and-scan:
     name: Docker Build and Security Scan
     runs-on: ubuntu-latest
@@ -52,35 +58,35 @@ jobs:
     permissions:
       id-token: write
       contents: read
-      
+      security-events: write
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
+
     - name: Configure AWS credentials using OIDC
       uses: aws-actions/configure-aws-credentials@v4
       with:
-        role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-role
+        role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/persons-finder-github-actions-prod
         aws-region: ${{ env.AWS_REGION }}
-        
+
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
-      
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
-      
+
     - name: Extract metadata for Docker
       id: meta
       uses: docker/metadata-action@v5
       with:
         images: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}
         tags: |
-          type=ref,event=branch
           type=ref,event=pr
-          type=sha,prefix={{branch}}-
-          type=raw,value=latest,enable={{is_default_branch}}
-          
+          type=sha,prefix=git-
+          type=semver,pattern={{version}}
+
     - name: Build Docker image
       uses: docker/build-push-action@v5
       with:
@@ -91,24 +97,49 @@ jobs:
         tags: ${{ steps.meta.outputs.tags }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
-        
-    - name: Run Trivy vulnerability scanner
-      uses: aquasecurity/trivy-action@master
+
+    # ── Security Gate ──────────────────────────────────────────────
+    - name: Install Trivy
+      run: |
+        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+        echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee /etc/apt/sources.list.d/trivy.list
+        sudo apt-get update -qq
+        sudo apt-get install -y trivy
+        trivy --version
+
+    - name: Trivy vulnerability scan (CI gate — CRITICAL/HIGH)
+      run: |
+        IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.version }}"
+        trivy image \
+          --severity CRITICAL,HIGH \
+          --ignore-unfixed \
+          --ignorefile .trivyignore \
+          --exit-code 1 \
+          --no-progress \
+          "$IMAGE"
+
+    # ── SBOM Generation ────────────────────────────────────────────
+    - name: Generate SBOM (CycloneDX)
+      run: |
+        IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.version }}"
+        trivy image \
+          --format cyclonedx \
+          --output sbom.cdx.json \
+          --no-progress \
+          "$IMAGE"
+        echo "SBOM generated: $(wc -c < sbom.cdx.json) bytes"
+
+    - name: Upload SBOM artifact
+      uses: actions/upload-artifact@v4
       with:
-        image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
-        format: 'sarif'
-        output: 'trivy-results.sarif'
-        severity: 'CRITICAL,HIGH'
-        exit-code: '1'
-        
-    - name: Upload Trivy scan results
-      if: always()
-      uses: github/codeql-action/upload-sarif@v3
-      with:
-        sarif_file: 'trivy-results.sarif'
-        
+        name: sbom-cyclonedx
+        path: sbom.cdx.json
+        retention-days: 90
+
+    # ── Push to ECR ────────────────────────────────────────────────
     - name: Push Docker image to ECR
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      id: push
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
       uses: docker/build-push-action@v5
       with:
         context: .
@@ -117,7 +148,136 @@ jobs:
         tags: ${{ steps.meta.outputs.tags }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
-        
+
     - name: Image digest
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-      run: echo "Image pushed with tags ${{ steps.meta.outputs.tags }}"
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+      run: echo "Image pushed — digest ${{ steps.push.outputs.digest }}"
+
+    # ── Image Signing (cosign + KMS) ───────────────────────────────
+    - name: Install cosign
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+      uses: sigstore/cosign-installer@v3
+
+    - name: Sign image with cosign (KMS)
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+      env:
+        COSIGN_YES: "true"
+      run: |
+        IMAGE_REF="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}@${{ steps.push.outputs.digest }}"
+        cosign sign \
+          --key "awskms:///${{ env.COSIGN_KMS_ARN }}" \
+          "$IMAGE_REF"
+        echo "Image signed: $IMAGE_REF"
+
+    - name: Attest SBOM with cosign (KMS)
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+      env:
+        COSIGN_YES: "true"
+      run: |
+        IMAGE_REF="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}@${{ steps.push.outputs.digest }}"
+        cosign attest \
+          --key "awskms:///${{ env.COSIGN_KMS_ARN }}" \
+          --predicate sbom.cdx.json \
+          --type cyclonedx \
+          "$IMAGE_REF"
+        echo "SBOM attestation pushed for: $IMAGE_REF"
+
+    # ── PII Redaction Sidecar (Layer 2) ────────────────────────────────
+    - name: Ensure sidecar ECR repository exists
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+      run: |
+        aws ecr create-repository \
+          --repository-name ${{ env.ECR_SIDECAR_REPOSITORY }} \
+          --region ${{ env.AWS_REGION }} \
+          --image-tag-mutability IMMUTABLE \
+          --image-scanning-configuration scanOnPush=true 2>/dev/null \
+          || echo "ECR repository already exists, continuing."
+
+    - name: Build sidecar image
+      run: |
+        SIDECAR_TAG="git-${GITHUB_SHA::7}"
+        SIDECAR_IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_SIDECAR_REPOSITORY }}:${SIDECAR_TAG}"
+        docker build \
+          -f devops/docker/Dockerfile.sidecar \
+          -t "$SIDECAR_IMAGE" \
+          .
+        echo "SIDECAR_IMAGE=$SIDECAR_IMAGE" >> $GITHUB_ENV
+
+    - name: Trivy scan sidecar image (CI gate — CRITICAL/HIGH)
+      run: |
+        trivy image \
+          --severity CRITICAL,HIGH \
+          --ignore-unfixed \
+          --exit-code 1 \
+          --no-progress \
+          "$SIDECAR_IMAGE"
+
+    - name: Push sidecar image to ECR
+      id: push-sidecar
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+      run: |
+        docker push "$SIDECAR_IMAGE"
+        DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$SIDECAR_IMAGE" | cut -d@ -f2)
+        echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+        echo "Sidecar pushed — digest $DIGEST"
+
+    - name: Sign sidecar image with cosign (KMS)
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+      env:
+        COSIGN_YES: "true"
+      run: |
+        SIDECAR_REF="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_SIDECAR_REPOSITORY }}@${{ steps.push-sidecar.outputs.digest }}"
+        cosign sign \
+          --key "awskms:///${{ env.COSIGN_KMS_ARN }}" \
+          "$SIDECAR_REF"
+        echo "Sidecar signed: $SIDECAR_REF"
+
+  helm-deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: docker-build-and-scan
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials using OIDC
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/persons-finder-github-actions-prod
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig \
+          --name persons-finder-prod \
+          --region ${{ env.AWS_REGION }}
+
+    - name: Deploy with Helm
+      run: |
+        kubectl create namespace persons-finder --dry-run=client -o yaml | kubectl apply -f -
+        if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          IMAGE_TAG="${GITHUB_REF_NAME#v}"   # v1.4.2 → 1.4.2
+        else
+          IMAGE_TAG="git-${GITHUB_SHA::7}"   # main branch → git-e087a9d
+        fi
+        helm upgrade --install persons-finder devops/helm/persons-finder/ \
+          --set image.tag="${IMAGE_TAG}" \
+          --set autoscaling.enabled=true \
+          --set autoscaling.minReplicas=1 \
+          --set autoscaling.maxReplicas=3 \
+          --set secrets.create=false \
+          --set networkPolicy.enabled=true \
+          --set sidecar.enabled=true \
+          --set sidecar.image.tag="${IMAGE_TAG}" \
+          --namespace persons-finder \
+          --wait --timeout 3m
+
+    - name: Verify deployment
+      run: |
+        kubectl rollout status deployment/persons-finder -n persons-finder
+        kubectl get pods -n persons-finder -o wide

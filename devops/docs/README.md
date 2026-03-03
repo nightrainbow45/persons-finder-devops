@@ -28,7 +28,12 @@ This directory contains comprehensive deployment guides and operational document
 
 - **Production cluster:** `persons-finder-prod`, AWS EKS, `ap-southeast-2`
 - **Production domain:** `aifindy.digico.cloud` (NGINX Ingress + Let's Encrypt TLS)
+- **Namespace:** `persons-finder`
+- **Nodes:** 3 × t3.small ON_DEMAND — Node1 `persons-finder-nodes-prod` (8/11), Node2 `system-nodes-prod` tainted (4/11), Node3 `persons-finder-nodes-prod` (8/11)
+- **Deployments:** 11 active — `persons-finder` (2/2 Running, main API + PII sidecar), cert-manager×3, external-secrets×3, ingress-nginx, coredns, kyverno×2
+- **HPA:** minReplicas=1, maxReplicas=3, CPU threshold=70%
 - **ECR:** `190239490233.dkr.ecr.ap-southeast-2.amazonaws.com/persons-finder` (IMMUTABLE tags)
 - **Image tag strategy:** `git-<sha>` for main branch builds, `X.Y.Z` semver for release tags
 - **Swagger UI:** `/swagger-ui/index.html` · OpenAPI spec: `/v3/api-docs`
 - **Health endpoint:** `/actuator/health` (liveness + readiness probes)
+- **Security:** Kyverno Enforce mode (image signing), NetworkPolicy active, TLS auto-renewed

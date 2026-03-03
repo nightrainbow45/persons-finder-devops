@@ -8,6 +8,8 @@ After deploying the Persons Finder application to AWS EKS with Ingress enabled, 
 
 ## Prerequisites
 
+> **Current live domain:** `aifindy.digico.cloud` — CNAME → NGINX Ingress LoadBalancer in `ap-southeast-2`. TLS managed by cert-manager (Let's Encrypt `letsencrypt-prod`).
+
 - Persons Finder application deployed to AWS EKS
 - NGINX Ingress Controller installed in the cluster
 - Ingress resource created for the application
@@ -694,5 +696,5 @@ If you encounter issues not covered in this guide:
 
 ---
 
-**Last Updated:** 2024
+**Last Updated:** 2026-03-03
 **Version:** 1.0.0

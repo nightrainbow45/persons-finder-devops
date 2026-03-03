@@ -32,7 +32,7 @@ kubectl get deployment persons-finder -n persons-finder -o yaml | grep -E "SWAGG
 
 # Test local access
 kubectl port-forward -n persons-finder service/persons-finder 8080:80
-curl http://localhost:8080/swagger-ui.html
+curl http://localhost:8080/swagger-ui/index.html
 ```
 
 ## Common Issues and Solutions
@@ -99,7 +99,7 @@ kubectl logs -n persons-finder -l app=persons-finder | grep -i "springdoc\|swagg
 kubectl port-forward -n persons-finder <pod-name> 8080:8080
 
 # Test Swagger UI
-curl http://localhost:8080/swagger-ui.html
+curl http://localhost:8080/swagger-ui/index.html
 
 # Test OpenAPI spec
 curl http://localhost:8080/v3/api-docs
@@ -268,20 +268,20 @@ swagger:
 
 ```bash
 # Test without credentials (should return 401)
-curl -I https://api.example.com/swagger-ui.html
+curl -I https://aifindy.digico.cloud/swagger-ui/index.html
 
 # Expected response:
 # HTTP/2 401
 # www-authenticate: Basic realm="Authentication Required"
 
 # Test with credentials (should return 200)
-curl -I -u admin:yourpassword https://api.example.com/swagger-ui.html
+curl -I -u admin:yourpassword https://aifindy.digico.cloud/swagger-ui/index.html
 
 # Expected response:
 # HTTP/2 200
 
 # Verify API endpoints don't require auth
-curl https://api.example.com/api/v1/persons
+curl https://aifindy.digico.cloud/api/v1/persons
 
 # Should return 200 without credentials
 ```
@@ -518,16 +518,16 @@ kubectl describe pod <pod-name> -n persons-finder | grep -A 10 "Readiness:"
 
 ```bash
 # Test HTTP access (if not redirected to HTTPS)
-curl -I http://api.example.com/swagger-ui.html
+curl -I http://aifindy.digico.cloud/swagger-ui/index.html
 
 # Test HTTPS access
-curl -I https://api.example.com/swagger-ui.html
+curl -I https://aifindy.digico.cloud/swagger-ui/index.html
 
 # Test with verbose output
-curl -v https://api.example.com/swagger-ui.html
+curl -v https://aifindy.digico.cloud/swagger-ui/index.html
 
 # Test OpenAPI spec
-curl https://api.example.com/v3/api-docs
+curl https://aifindy.digico.cloud/v3/api-docs
 ```
 
 ### 6. TLS Certificate Issues
@@ -1056,7 +1056,7 @@ kubectl port-forward -n persons-finder <pod-name> 8080:8080
 curl http://localhost:8080/actuator/health
 
 # Test Swagger UI
-curl http://localhost:8080/swagger-ui.html
+curl http://localhost:8080/swagger-ui/index.html
 
 # If direct access works, issue is with Service or Ingress
 ```
@@ -1076,12 +1076,12 @@ kubectl get deployment persons-finder -n persons-finder -o yaml | grep SWAGGER_E
 
 # 3. Test local access
 kubectl port-forward -n persons-finder service/persons-finder 8080:80
-curl http://localhost:8080/swagger-ui.html
+curl http://localhost:8080/swagger-ui/index.html
 curl http://localhost:8080/v3/api-docs
 
 # 4. Test remote access (if Ingress enabled)
-curl https://api.example.com/swagger-ui.html
-curl https://api.example.com/v3/api-docs
+curl https://aifindy.digico.cloud/swagger-ui/index.html
+curl https://aifindy.digico.cloud/v3/api-docs
 ```
 
 ### Complete Health Check
@@ -1104,13 +1104,13 @@ kubectl get certificate -n persons-finder
 kubectl describe certificate persons-finder-tls -n persons-finder
 
 # 5. Application health
-curl https://api.example.com/actuator/health
+curl https://aifindy.digico.cloud/actuator/health
 
 # 6. Swagger UI health
-curl -I https://api.example.com/swagger-ui.html
+curl -I https://aifindy.digico.cloud/swagger-ui/index.html
 
 # 7. OpenAPI spec health
-curl https://api.example.com/v3/api-docs | jq '.info'
+curl https://aifindy.digico.cloud/v3/api-docs | jq '.info'
 ```
 
 ### Log Analysis
@@ -1168,5 +1168,5 @@ Provide the following information when requesting help:
 
 ---
 
-**Last Updated:** 2024
+**Last Updated:** 2026-03-03
 **Version:** 1.0.0

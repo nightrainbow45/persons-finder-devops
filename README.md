@@ -46,10 +46,91 @@ The app sends user PII (names, bios) to an external LLM provider.
 | **Swagger UI** | https://aifindy.digico.cloud/swagger-ui/index.html |
 | **OpenAPI spec** | https://aifindy.digico.cloud/v3/api-docs |
 | **Cluster** | AWS EKS `persons-finder-prod`, `ap-southeast-2` |
-| **Nodes** | 3 × t3.small — 1 ON_DEMAND (system) + 2 SPOT (app, `persons-finder-nodes-prod`) |
+| **Nodes** | 3 × t3.small ON_DEMAND — 1 system node + 2 app nodes (`persons-finder-nodes-prod`) |
 | **TLS** | Let's Encrypt via cert-manager, auto-renewed |
 | **Image tag** | `git-<sha>` (main builds) / `X.Y.Z` semver (releases) — ECR IMMUTABLE |
-| **Replicas** | 3 (HPA min=3, max=10, CPU 70%) |
+| **Replicas** | 1 (HPA min=1, max=3, CPU 70%) |
+
+---
+
+## 🖥️ Cluster Status
+
+### Nodes (3 × t3.small ON_DEMAND — 2 vCPU / ~1.4 GB allocatable / max 11 pods each)
+
+| Node | Node Group | AZ | Taint | Pods | CPU Used | Mem Used |
+|------|------------|----|-------|------|----------|----------|
+| `ip-10-1-2-119` | `persons-finder-nodes-prod` | ap-southeast-2a | none | 8/11 | 400m (20%) | 292Mi (20%) |
+| `ip-10-1-3-167` | `system-nodes-prod` | ap-southeast-2b | `system=true:NoSchedule` | 4/11 | 300m (15%) | 190Mi (13%) |
+| `ip-10-1-3-25` | `persons-finder-nodes-prod` | ap-southeast-2b | none | 8/11 | 650m (33%) | 810Mi (56%) |
+
+> `system-nodes-prod` carries a `NoSchedule` taint — only pods with a matching toleration are admitted, keeping system components isolated from application workloads.
+
+### Namespaces (9)
+
+| Namespace | Purpose |
+|-----------|---------|
+| `kube-system` | Core K8s system components: VPC CNI, kube-proxy, CoreDNS, Fluent Bit |
+| `kube-public` | Cluster-wide public info (read-only, mostly empty) |
+| `kube-node-lease` | Node heartbeat leases used by the control plane to detect node failures |
+| `default` | Default namespace — no business workloads deployed here |
+| `cert-manager` | Automatic TLS certificate provisioning and renewal via Let's Encrypt |
+| `external-secrets` | External Secrets Operator — syncs `OPENAI_API_KEY` from AWS Secrets Manager into K8s |
+| `ingress-nginx` | NGINX Ingress controller — external HTTP/HTTPS entry point, TLS termination, Basic Auth |
+| `kyverno` | Image signature policy engine (Enforce mode) — blocks pods with unsigned images |
+| `persons-finder` | **Business application**: Spring Boot API + PII Redaction Sidecar |
+
+### Deployments (11 — all 1/1 Ready)
+
+| Namespace | Deployment | Image | Purpose |
+|-----------|-----------|-------|---------|
+| `cert-manager` | `cert-manager` | jetstack/cert-manager-controller:v1.13.0 | Certificate lifecycle controller |
+| `cert-manager` | `cert-manager-cainjector` | jetstack/cert-manager-cainjector:v1.13.0 | Injects CA certs into webhook configs |
+| `cert-manager` | `cert-manager-webhook` | jetstack/cert-manager-webhook:v1.13.0 | Validates Certificate/Issuer resources |
+| `external-secrets` | `external-secrets` | external-secrets:v2.0.1 | Pulls secrets from AWS Secrets Manager |
+| `external-secrets` | `external-secrets-cert-controller` | external-secrets:v2.0.1 | Manages ESO's own webhook TLS cert |
+| `external-secrets` | `external-secrets-webhook` | external-secrets:v2.0.1 | Validates ExternalSecret resource format |
+| `ingress-nginx` | `ingress-nginx-controller` | ingress-nginx/controller:v1.14.3 | NGINX reverse proxy and Ingress controller |
+| `kube-system` | `coredns` | eks/coredns:v1.11.4 | In-cluster DNS (`svc.cluster.local`) |
+| `kyverno` | `kyverno-admission-controller` | kyverno/kyverno:v1.17.1 | Admission webhook — enforces image signing |
+| `kyverno` | `kyverno-background-controller` | kyverno/background-controller:v1.17.1 | Async background compliance scanning |
+| `persons-finder` | `persons-finder` | ECR `persons-finder:git-0e2835b` + `pii-redaction-sidecar:git-0e2835b` | **Business app (2 containers: Spring Boot API + Go PII sidecar)** |
+
+### Pods by Node
+
+**Node 1 — `ip-10-1-2-119` (persons-finder-nodes-prod) — 8/11**
+
+| Pod | Namespace | Ready | Purpose |
+|-----|-----------|-------|---------|
+| `aws-node-f8wmn` | kube-system | 2/2 | AWS VPC CNI — assigns VPC IPs to pods |
+| `kube-proxy-8xgpf` | kube-system | 1/1 | Maintains iptables rules for Service routing |
+| `fluent-bit-ddfj5` | kube-system | 1/1 | Collects container stdout logs → CloudWatch |
+| `kyverno-admission-controller-*` | kyverno | 1/1 | Admission webhook — blocks unsigned images |
+| `kyverno-background-controller-*` | kyverno | 1/1 | Background async policy compliance |
+| `cert-manager-*` | cert-manager | 1/1 | TLS certificate lifecycle (Let's Encrypt) |
+| `cert-manager-cainjector-*` | cert-manager | 1/1 | CA injection into webhook configurations |
+| `cert-manager-webhook-*` | cert-manager | 1/1 | Certificate resource validation |
+
+**Node 2 — `ip-10-1-3-167` (system-nodes-prod, tainted) — 4/11**
+
+| Pod | Namespace | Ready | Purpose |
+|-----|-----------|-------|---------|
+| `aws-node-2frlf` | kube-system | 2/2 | AWS VPC CNI |
+| `kube-proxy-9khl8` | kube-system | 1/1 | Service routing rules |
+| `fluent-bit-v9862` | kube-system | 1/1 | Log collection → CloudWatch |
+| `ingress-nginx-controller-*` | ingress-nginx | 1/1 | External HTTPS entry point, TLS termination, Swagger Basic Auth |
+
+**Node 3 — `ip-10-1-3-25` (persons-finder-nodes-prod) — 8/11**
+
+| Pod | Namespace | Ready | Purpose |
+|-----|-----------|-------|---------|
+| `aws-node-2hcf6` | kube-system | 2/2 | AWS VPC CNI |
+| `kube-proxy-hscph` | kube-system | 1/1 | Service routing rules |
+| `fluent-bit-swvvb` | kube-system | 1/1 | Log collection → CloudWatch (incl. PII audit logs) |
+| `coredns-*` | kube-system | 1/1 | In-cluster DNS resolution |
+| `external-secrets-*` | external-secrets | 1/1 | Syncs `OPENAI_API_KEY` from AWS Secrets Manager |
+| `external-secrets-cert-controller-*` | external-secrets | 1/1 | ESO internal TLS cert management |
+| `external-secrets-webhook-*` | external-secrets | 1/1 | ESO resource format validation |
+| `persons-finder-*` | persons-finder | **2/2** | **① Spring Boot REST API  ② Go PII Redaction Sidecar (port 8081)** |
 
 ---
 

@@ -77,10 +77,10 @@ This runs Terraform to create the VPC, EKS cluster, and node groups.
 ### Step 2: Create Secret
 
 ```bash
-kubectl create namespace dev
+kubectl create namespace persons-finder
 kubectl create secret generic persons-finder-secrets \
   --from-literal=OPENAI_API_KEY=<your-key> \
-  -n dev
+  -n persons-finder
 ```
 
 ### Step 3: Deploy
@@ -88,7 +88,7 @@ kubectl create secret generic persons-finder-secrets \
 ```bash
 # Use a git-sha tag from ECR (main branch builds) or semver (release tags)
 # Never use `latest` — ECR is IMMUTABLE and latest is not traceable
-./devops/scripts/deploy.sh dev --tag git-$(git rev-parse --short HEAD)
+./devops/scripts/deploy.sh persons-finder --tag git-$(git rev-parse --short HEAD)
 ```
 
 ### Step 4: Verify
@@ -101,7 +101,7 @@ kubectl create secret generic persons-finder-secrets \
 
 ```bash
 # Local port-forward (no Ingress needed)
-kubectl port-forward svc/persons-finder 8080:80 -n default &
+kubectl port-forward svc/persons-finder 8080:80 -n persons-finder &
 open http://localhost:8080/swagger-ui/index.html
 
 # OpenAPI spec

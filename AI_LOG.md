@@ -22,8 +22,10 @@
 - [ ] Every container needs both `readinessProbe` and `livenessProbe`, including sidecars
 - [ ] Both `resources.requests` and `resources.limits` are required
 - [ ] Ingress needs `pathType: Prefix` or `Exact`
-- [ ] Separate app nodes (SPOT) from system node (ON_DEMAND); but Kyverno/cert-manager without `nodeSelector` will drift to SPOT nodes — a SPOT interruption takes down the admission webhook
-- [ ] Spread SPOT app nodes across AZs — current setup has both in `ap-southeast-2b`; a single AZ failure loses all replicas simultaneously
+- [ ] Do not rely on SPOT for nodes running Kyverno or other admission webhooks — SPOT interruption takes the webhook down; with `failurePolicy: Fail` this bricks the entire cluster (cannot schedule any pod)
+- [ ] t3.small hard cap is 11 pods per node (ENI limit) — DaemonSets (aws-node + kube-proxy + fluent-bit) consume 3 slots; actual usable slots ≈ 8 per node; plan accordingly
+- [ ] Verify AWS account type before choosing instance class — Free Tier accounts cannot launch t3.medium or larger; only t3.small/t3.micro are eligible (launch will silently fail with InsufficientInstanceCapacity)
+- [ ] System pods (cert-manager, external-secrets, coredns) land on whichever node has capacity — after topology changes they can pile onto one node; redistribute manually with pod deletion if needed
 - [ ] `podSecurityContext`: `runAsNonRoot: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`
 - [ ] Sidecar is an outbound forward proxy — use `LISTEN_PORT` + `UPSTREAM_URL`, not `TARGET_HOST` + `TARGET_PORT`
 - [ ] When sidecar is enabled, inject `LLM_PROXY_URL` into the main container
@@ -300,20 +302,20 @@ Tried setting `ENABLE_PREFIX_DELEGATION=true` on the `aws-node` DaemonSet at run
 
 Fixed at the time: `maxSurge: 0, maxUnavailable: 1` — kill old first, then start new. Brief unavailability window but the upgrade actually completes.
 
-> **Update — current actual state (verified):**
+> **Update — current actual state (verified 2026-03-03):**
 >
-> Three nodes, two nodegroups:
+> Three nodes, two nodegroups — **all ON_DEMAND** after SPOT pool exhaustion incident (see Chapter 23):
 >
-> | Nodegroup | Count | Type | AZ | What actually runs there |
-> |---|---|---|---|---|
-> | `system-nodes-prod` | 1 | ON_DEMAND | ap-southeast-2a | ingress-nginx + DaemonSets (aws-node/kube-proxy/fluent-bit) |
-> | `persons-finder-nodes-prod` | 2 | SPOT | ap-southeast-2b (both same AZ) | persons-finder ×3 + kyverno + cert-manager + external-secrets + coredns |
+> | Nodegroup | Count | Type | AZ | Pods | What actually runs there |
+> |---|---|---|---|---|---|
+> | `system-nodes-prod` | 1 | ON_DEMAND | ap-southeast-2b | 4/11 | ingress-nginx + DaemonSets (aws-node/kube-proxy/fluent-bit) |
+> | `persons-finder-nodes-prod` | 2 | ON_DEMAND | ap-southeast-2a + 2b | 8/11 each | persons-finder (2/2 w/ sidecar) + kyverno + cert-manager + external-secrets + coredns |
 >
-> `maxSurge` is still `0` — not updated yet despite having two app nodes now.
+> `maxSurge=0` still in effect — correct for 11-pod ENI constraint.
 >
-> **Residual risks found during verification:**
-> 1. Kyverno admission controller and cert-manager are running on SPOT nodes — no `nodeSelector`/toleration to pin them to the system node. A SPOT interruption takes down the Kyverno webhook; combined with `failurePolicy: Fail`, this blocks all pod creation cluster-wide.
-> 2. Both SPOT app nodes are in `ap-southeast-2b` — a single AZ failure loses all application replicas simultaneously.
+> **Residual risks (still unresolved):**
+> 1. Kyverno and cert-manager have no `nodeSelector` — they land wherever capacity exists, currently split across app nodes. Still a risk if those nodes fill up.
+> 2. Both app nodes are in different AZs now (ap-southeast-2a + 2b) — AZ risk is mitigated but only 1 replica running (HPA min=1). An app node failure → zero replicas until rescheduled.
 
 ---
 
@@ -474,14 +476,78 @@ How to catch this class of bug: after adding any new feature, ask "what **alread
 
 ---
 
+### 23. Node Selection Cascade: SPOT → Kyverno Down → Full Cluster Recovery
+
+**Files:** `devops/terraform/environments/prod/main.tf`, `.github/workflows/ci-cd.yml`, `devops/terraform/modules/eks/aws-auth.tf`, `devops/k8s/external-secret.yaml`
+
+---
+
+One CI failure turned into six separate problems chained together. All of them started with a node choice.
+
+**Root cause: SPOT pool exhaustion.**
+
+The original design was `system-nodes-prod` (1× ON_DEMAND) + `persons-finder-nodes-prod` (SPOT app nodes). CI failed, logs showed Kyverno webhook unavailable. Investigation: SPOT capacity for t3.small in `ap-southeast-2` was exhausted — AWS couldn't fulfil the Spot request (`UnfulfillableCapacity`). Both SPOT app nodes had already terminated. Kyverno's admission controller was running on those nodes. With `failurePolicy: Fail`, a down webhook = no pod can be created cluster-wide. The cluster was effectively bricked.
+
+Recovery sequence:
+1. Temporarily removed the `system=true:NoSchedule` taint from the system node to let Kyverno schedule there
+2. Scaled `system-nodes-prod` from 1 → 2 to add capacity
+3. Kyverno recovered, cluster unbricked
+4. Triggered a CI retrigger commit to verify
+
+**First attempted fix: switch to t3.medium.**
+
+More pods per node → fewer pressure issues. Changed `node_instance_type = "t3.medium"`. Applied via Terraform. Node group launched — then immediately failed. AWS reported the launch template was using an instance type not eligible for the account. This account runs on the Free Tier; t3.medium is not in the Free Tier eligible list. No warning from Terraform, no warning from the AWS console until the node actually tried to start. Changed back to t3.small.
+
+**Second fix: switch everything to ON_DEMAND.**
+
+"别用SPOT了，都用按需" — stopped using SPOT entirely. Changed `capacity_type = "SPOT"` → `"ON_DEMAND"`. Also scaled app nodes from 1 → 2 (`node_desired_count = 2, node_min_count = 2`) to ensure capacity headroom. Committed as `a22da7a`.
+
+**Third problem: pod memory insufficient.**
+
+With 2 app nodes, the persons-finder pod still wouldn't schedule. Node had 761Mi available; pod requested 768Mi (512Mi main + 256Mi sidecar). Margin: -7Mi. Changed sidecar memory request from `256Mi` → `128Mi`. Total: 640Mi. Pods scheduled.
+
+**Fourth problem: namespace mismatch.**
+
+During the chaos, discovered two parallel deployments existed:
+- `default` namespace: CI had been deploying here (original `--namespace default` in helm command)
+- `persons-finder` namespace: manual deployment from earlier sessions
+
+Two deployments, two pods, neither authoritative. Fixed by changing the CI deploy target to `--namespace persons-finder` and deleting the `default` namespace deployment.
+
+**Fifth problem: deployer ClusterRole missing `namespaces` permission.**
+
+The new helm command used `kubectl create namespace persons-finder --dry-run=client -o yaml | kubectl apply -f -` before `helm upgrade`. The GitHub Actions IAM role → `deployers` group → `deployer` ClusterRole. That ClusterRole had `secrets, configmaps, services, pods...` but not `namespaces`. The namespace creation step threw `forbidden`. Added `namespaces` to the ClusterRole resource list in `aws-auth.tf` and patched it live.
+
+**Sixth problem: ExternalSecret in wrong namespace.**
+
+After deleting the `default` namespace deployment, the `persons-finder-secrets` K8s Secret was also gone (it had been ESO-synced into `default`). The app in `persons-finder` namespace couldn't find the secret. Applied the ExternalSecret into `persons-finder` namespace manually, ESO synced it. Updated `devops/k8s/external-secret.yaml` to set `namespace: persons-finder` permanently.
+
+**Final state after all fixes:**
+- 3× t3.small ON_DEMAND nodes (no SPOT in cluster)
+- All deployments in `persons-finder` namespace
+- persons-finder pod: 2/2 Running (main + sidecar)
+- CI green on commit `0e2835b`
+
+**Lessons:**
+
+1. **SPOT + admission webhooks = dangerous.** If the webhook node goes, the cluster goes. Either pin admission controllers to ON_DEMAND nodes with tolerations, or don't use SPOT at all for small single-replica setups.
+2. **Free Tier accounts silently block instance types.** AWS does not warn you at plan time. The failure only surfaces when the actual EC2 launch is attempted.
+3. **t3.small 11-pod ENI limit has no margin.** 3 DaemonSet pods per node → 8 usable slots. With 6 system pods (cert-manager×3 + external-secrets×3) landing on one app node, you hit 9/11 before your app even schedules. Pod redistribution via manual deletion was needed.
+4. **Namespace as a source of truth.** Two competing deployments in different namespaces looked like healthy pods but served different traffic. Always verify `kubectl get pods -A` before assuming there's only one deployment.
+5. **RBAC gaps compound during recovery.** Adding a namespace step to the CI script exposed a missing RBAC permission that would never have been triggered in the old flow. New procedures uncover old permission gaps.
+
+---
+
 ## Wrap-Up
 
-Honest take: AI was genuinely useful here — generating first drafts, scaffolding, templates — much faster than writing from scratch. But every one of these 22 chapters is a real bug we hit, mostly because:
+Honest take: AI was genuinely useful here — generating first drafts, scaffolding, templates — much faster than writing from scratch. But every one of these 23 chapters is a real bug we hit, mostly because:
 
-- AI doesn't know your specific constraints (t3.small pod limits, multi-repo OIDC, KMS key lifecycle)
+- AI doesn't know your specific constraints (t3.small pod limits, multi-repo OIDC, KMS key lifecycle, Free Tier account restrictions)
 - AI-generated configs pass the "first run" check but blow up in fresh environments or edge cases
 - You need to understand every line it gives you, not just copy-paste and ship
 
 The scariest ones are the "invisible until it's too late" bugs: missing RBAC only shows up on a fresh cluster rebuild, KMS key change only bites you after the next destroy, sidecar wired backwards but the pod looks healthy. Code review won't catch these — only actually running the thing will.
 
-Chapter 22 adds another pattern: fixing one thing while missing another. The main image tag was fixed to `git-sha` but `sidecar.image.tag` was left as `latest`. `maxSurge` was set to `0` for single-node and never updated after adding a second app node. Node groups were separated but Kyverno and cert-manager weren't pinned to the system node — they still run on SPOT. **A partial fix is not a global fix.** Periodic live state verification (`kubectl get` + `helm get values`) is more reliable than reading the docs.
+Chapter 22 adds another pattern: fixing one thing while missing another. The main image tag was fixed to `git-sha` but `sidecar.image.tag` was left as `latest`. `maxSurge` was set to `0` for single-node and never updated after adding a second app node. Node groups were separated but Kyverno and cert-manager weren't pinned to the system node — they still run on SPOT. **A partial fix is not a global fix.**
+
+Chapter 23 adds the cascade pattern: one infrastructure failure (SPOT pool exhaustion) triggered six separate problems in sequence — cluster bricked, wrong instance type tried, memory insufficient, namespace mismatch discovered, RBAC gap exposed, secret in wrong namespace. None of these were individually hard to fix. But each fix uncovered the next problem. The lesson: **production incidents are rarely a single failure — they're a chain.** Follow it all the way to the end before declaring recovery complete. Periodic live state verification (`kubectl get pods -A`, `kubectl get nodes`, `helm get values`) is more reliable than reading docs.

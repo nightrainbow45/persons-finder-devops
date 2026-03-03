@@ -1,0 +1,121 @@
+name: Periodic Security Re-scan
+
+# Re-scan all ECR images weekly so new CVEs are caught even without new pushes.
+# Runs every Monday at 02:00 UTC, or manually via workflow_dispatch.
+on:
+  schedule:
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Specific image tag to scan (leave blank to scan all recent tags)'
+        required: false
+        default: ''
+
+env:
+  AWS_REGION: ap-southeast-2
+  ECR_REPOSITORY: persons-finder
+
+jobs:
+  rescan:
+    name: Re-scan ECR Images
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      security-events: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials using OIDC
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/persons-finder-github-actions-prod
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Install Trivy
+      run: |
+        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+        echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee /etc/apt/sources.list.d/trivy.list
+        sudo apt-get update -qq
+        sudo apt-get install -y trivy
+        trivy --version
+
+    - name: Determine tags to scan
+      id: tags
+      run: |
+        REGISTRY="${{ steps.login-ecr.outputs.registry }}"
+        REPO="${{ env.ECR_REPOSITORY }}"
+
+        if [[ -n "${{ github.event.inputs.image_tag }}" ]]; then
+          # Manual dispatch: scan specific tag
+          echo "images=${REGISTRY}/${REPO}:${{ github.event.inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+        else
+          # Scheduled: scan last 5 git-* tags (most recent CI builds)
+          TAGS=$(aws ecr describe-images \
+            --repository-name "${REPO}" \
+            --query "sort_by(imageDetails, &imagePushedAt)[-5:].imageTags[]" \
+            --output text | tr '\t' '\n' | grep '^git-' | head -5)
+
+          IMAGES=""
+          for tag in $TAGS; do
+            IMAGES="${IMAGES} ${REGISTRY}/${REPO}:${tag}"
+          done
+          echo "images=${IMAGES}" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Scan images for new CVEs
+      id: scan
+      run: |
+        FAILED=0
+        mkdir -p scan-results
+
+        for IMAGE in ${{ steps.tags.outputs.images }}; do
+          TAG=$(echo "$IMAGE" | cut -d: -f2)
+          echo "::group::Scanning $IMAGE"
+
+          # Full scan report (all severities, for audit)
+          trivy image \
+            --format json \
+            --output "scan-results/${TAG}.json" \
+            --no-progress \
+            "$IMAGE" || true
+
+          # Gate: fail on CRITICAL/HIGH unfixed
+          if ! trivy image \
+              --severity CRITICAL,HIGH \
+              --ignore-unfixed \
+              --ignorefile .trivyignore \
+              --exit-code 1 \
+              --no-progress \
+              "$IMAGE"; then
+            echo "::error::CRITICAL/HIGH CVEs found in $IMAGE"
+            FAILED=1
+          else
+            echo "No CRITICAL/HIGH unfixed CVEs in $IMAGE"
+          fi
+
+          echo "::endgroup::"
+        done
+
+        echo "failed=${FAILED}" >> "$GITHUB_OUTPUT"
+
+    - name: Upload scan reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: rescan-reports-${{ github.run_id }}
+        path: scan-results/
+        retention-days: 90
+
+    - name: Fail if any image has critical CVEs
+      if: steps.scan.outputs.failed == '1'
+      run: |
+        echo "One or more images have CRITICAL/HIGH CVEs — create a patch release!"
+        exit 1

@@ -93,6 +93,141 @@
                                     └─────────────────┘
 ```
 
+## EKS Node Architecture
+
+The cluster runs two node groups with distinct responsibilities. Workloads are separated by a taint on the system node so that infrastructure pods never compete for resources with application pods.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EKS Cluster: persons-finder-prod  (ap-southeast-2b)                    │
+│                                                                         │
+│  ┌───────────────────────────────────┐  ┌────────────────────────────┐  │
+│  │  Node Group: system-nodes-prod    │  │  Node Group:               │  │
+│  │  t3.small · ON_DEMAND · 1 node    │  │  persons-finder-nodes-prod │  │
+│  │  Taint: system=true:NoSchedule   │  │  t3.medium · ON_DEMAND     │  │
+│  │                                   │  │  1–3 nodes (auto-scaling)  │  │
+│  │  ┌─────────────────────────────┐  │  │                            │  │
+│  │  │  DaemonSets (run on         │  │  │  ┌──────────────────────┐  │  │
+│  │  │  every node automatically)  │  │  │  │  kube-system         │  │  │
+│  │  │                             │  │  │  │  ─────────────────── │  │  │
+│  │  │  aws-node                   │  │  │  │  coredns             │  │  │
+│  │  │  VPC CNI — assigns pod IPs  │  │  │  │  Cluster DNS: routes │  │  │
+│  │  │  from the VPC CIDR block;   │  │  │  │  service discovery & │  │  │
+│  │  │  network-policy-agent       │  │  │  │  external DNS queries │  │  │
+│  │  │  sidecar enforces           │  │  │  └──────────────────────┘  │  │
+│  │  │  NetworkPolicy via eBPF     │  │  │                            │  │
+│  │  │                             │  │  │  ┌──────────────────────┐  │  │
+│  │  │  kube-proxy                 │  │  │  │  cert-manager (×3)   │  │  │
+│  │  │  iptables rules for         │  │  │  │  ─────────────────── │  │  │
+│  │  │  ClusterIP → pod routing    │  │  │  │  controller          │  │  │
+│  │  │                             │  │  │  │  Watches Certificate │  │  │
+│  │  │  fluent-bit                 │  │  │  │  resources, triggers │  │  │
+│  │  │  Tails container logs;      │  │  │  │  ACME / Let's Encrypt│  │  │
+│  │  │  filters PII_AUDIT entries; │  │  │  │  renewal             │  │  │
+│  │  │  ships to CloudWatch        │  │  │  │                      │  │  │
+│  │  │  /eks/persons-finder/       │  │  │  │  webhook             │  │  │
+│  │  │  pii-audit                  │  │  │  │  Admission webhook:  │  │  │
+│  │  └─────────────────────────────┘  │  │  │  validates cert-     │  │  │
+│  │                                   │  │  │  manager CRD writes  │  │  │
+│  │  ┌─────────────────────────────┐  │  │  │                      │  │  │
+│  │  │  ingress-nginx              │  │  │  │  cainjector          │  │  │
+│  │  │  (toleration: system=true)  │  │  │  │  Injects CA bundle   │  │  │
+│  │  │                             │  │  │  │  into webhook TLS    │  │  │
+│  │  │  Routes external HTTPS      │  │  │  │  configs so the      │  │  │
+│  │  │  traffic; enforces rate     │  │  │  │  webhook can         │  │  │
+│  │  │  limits (100 req/s) and     │  │  │  │  bootstrap its own   │  │  │
+│  │  │  Basic Auth on Swagger UI   │  │  │  │  TLS certificate     │  │  │
+│  │  └─────────────────────────────┘  │  │  └──────────────────────┘  │  │
+│  └───────────────────────────────────┘  │                            │  │
+│                                         │  ┌──────────────────────┐  │  │
+│                                         │  │  external-secrets(×3)│  │  │
+│                                         │  │  ─────────────────── │  │  │
+│                                         │  │  core controller     │  │  │
+│                                         │  │  Polls AWS Secrets   │  │  │
+│                                         │  │  Manager; syncs      │  │  │
+│                                         │  │  OPENAI_API_KEY into │  │  │
+│                                         │  │  K8s Secret          │  │  │
+│                                         │  │                      │  │  │
+│                                         │  │  webhook             │  │  │
+│                                         │  │  Validates External  │  │  │
+│                                         │  │  Secret CRD writes   │  │  │
+│                                         │  │                      │  │  │
+│                                         │  │  cert-controller     │  │  │
+│                                         │  │  Manages TLS certs   │  │  │
+│                                         │  │  for ESO webhook     │  │  │
+│                                         │  └──────────────────────┘  │  │
+│                                         │                            │  │
+│                                         │  ┌──────────────────────┐  │  │
+│                                         │  │  kyverno (×2)        │  │  │
+│                                         │  │  ─────────────────── │  │  │
+│                                         │  │  admission-controller│  │  │
+│                                         │  │  Intercepts every    │  │  │
+│                                         │  │  pod create/update;  │  │  │
+│                                         │  │  calls ECR via IRSA  │  │  │
+│                                         │  │  to verify cosign    │  │  │
+│                                         │  │  image signature;    │  │  │
+│                                         │  │  blocks unsigned pods│  │  │
+│                                         │  │                      │  │  │
+│                                         │  │  background-ctrl     │  │  │
+│                                         │  │  Scans already-      │  │  │
+│                                         │  │  running resources   │  │  │
+│                                         │  │  against policies;   │  │  │
+│                                         │  │  generates           │  │  │
+│                                         │  │  PolicyReports       │  │  │
+│                                         │  └──────────────────────┘  │  │
+│                                         │                            │  │
+│                                         │  ┌──────────────────────┐  │  │
+│                                         │  │  persons-finder      │  │  │
+│                                         │  │  (1–3 pods, HPA)     │  │  │
+│                                         │  │  ─────────────────── │  │  │
+│                                         │  │  main (Spring Boot)  │  │  │
+│                                         │  │  REST API :8080      │  │  │
+│                                         │  │  PII Layer 1         │  │  │
+│                                         │  │  H2 in-memory DB     │  │  │
+│                                         │  │                      │  │  │
+│                                         │  │  sidecar (Go)        │  │  │
+│                                         │  │  PII Layer 2 :8081   │  │  │
+│                                         │  │  Second regex scan   │  │  │
+│                                         │  │  before forwarding   │  │  │
+│                                         │  │  to OpenAI           │  │  │
+│                                         │  └──────────────────────┘  │  │
+│                                         └────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Why Two Node Groups?
+
+| Concern | system-nodes-prod (t3.small) | persons-finder-nodes-prod (t3.medium) |
+|---------|------------------------------|---------------------------------------|
+| **Taint** | `system=true:NoSchedule` — prevents regular app pods from landing here | None — all workloads welcome |
+| **Purpose** | Low-level cluster plumbing that must always be available | User-space operators and the application itself |
+| **Scaling** | Fixed at 1 (infrastructure is constant) | 1–3 nodes driven by HPA CPU metrics |
+| **Capacity type** | ON_DEMAND (non-interruptible) | ON_DEMAND (switched from SPOT; stable for Kyverno webhook latency) |
+| **DaemonSets** | aws-node, kube-proxy, fluent-bit run here (and on every app node) | Same DaemonSets also run here per node |
+
+### Why DaemonSets Ignore the Taint
+
+`aws-node`, `kube-proxy`, and `fluent-bit` are DaemonSets with `tolerations: [{operator: Exists}]` — they tolerate **all** taints and therefore run on **every node** in the cluster. This is intentional: every node needs VPC networking, iptables rules, and log shipping regardless of what other workloads it hosts.
+
+### Why Each cert-manager Pod Exists
+
+| Pod | Role |
+|-----|------|
+| **controller** | Core reconciliation loop — watches `Certificate`/`Issuer` resources, triggers ACME challenges, renews expiring certs |
+| **webhook** | ValidatingAdmissionWebhook — rejects malformed cert-manager CRD writes before they reach etcd |
+| **cainjector** | Reads CA bundles from `Secret`/`Certificate` resources and injects them into `MutatingWebhookConfiguration` / `ValidatingWebhookConfiguration` — this is how the webhook's own TLS trust chain bootstraps itself |
+
+### Why Each Kyverno Pod Exists
+
+| Pod | Role |
+|-----|------|
+| **admission-controller** | The enforcement gate — every `pods/create` and `pods/update` request passes through this webhook; it calls ECR (via IRSA, ~1 s) to verify the cosign signature and returns `DENY` for unsigned images |
+| **background-controller** | Evaluates policies against already-running resources; produces `PolicyReport` CRDs so you can audit the cluster state without waiting for a new deployment |
+
+> Note: `reports-controller` and `cleanup-controller` are scaled to 0 replicas in this cluster to stay within the t3.small 11-pod limit. This does not affect the Enforce admission gate.
+
+---
+
 ## Data Flow: API Request
 
 ```
