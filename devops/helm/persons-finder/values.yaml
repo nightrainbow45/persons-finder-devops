@@ -137,7 +137,7 @@ sidecar:
       memory: 512Mi
     requests:
       cpu: 100m
-      memory: 256Mi
+      memory: 128Mi
   port: 8081
 
 # Network Policy
