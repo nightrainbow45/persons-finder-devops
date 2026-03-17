@@ -5,6 +5,147 @@
 
 ---
 
+## Table of Contents
+
+1. [Document Positioning](#document-positioning)
+2. [Executive Summary](#executive-summary)
+3. [Artifact Coverage: Dockerfile](#1-dockerfile)
+4. [Artifact Coverage: Kubernetes](#2-kubernetes)
+5. [Artifact Coverage: CI/CD Pipeline](#3-cicd-pipeline)
+6. [Artifact Coverage: PII Protection](#4-pii-protection)
+7. [Artifact Coverage: Terraform](#5-terraform)
+8. [Artifact Coverage: API Endpoints](#6-api-endpoints)
+9. [Artifact Coverage: Actuator & Health Checks](#7-actuator--health-checks)
+10. [Interview Pitch](#interview-pitch)
+
+---
+
+## 1. Dockerfile
+
+**Original Prompt / Intent:** Generate a multi-stage Dockerfile for a Spring Boot + JDK 11 app with minimal final image size.
+
+**What Was Generated:** Two-stage build: `gradle:7.6.4-jdk11-focal` builder → `eclipse-temurin:11.0.26_4-jre-alpine` runtime.
+
+**Flaws Identified:**
+- Missing non-root user — container ran as root (security issue).
+- No explicit `HEALTHCHECK` instruction — Kubernetes liveness probe relied solely on HTTP endpoint.
+- `COPY` used `--chown` incorrectly, causing permission errors on some builds.
+
+**Fixes Applied:**
+- Add `RUN adduser -D appuser && USER appuser` to restrict privileges.
+- Add `HEALTHCHECK CMD wget -qO- http://localhost:8080/actuator/health || exit 1`.
+- Correct `--chown=appuser:appuser` flag on the COPY instruction.
+
+---
+
+## 2. Kubernetes
+
+**Original Prompt / Intent:** Generate Kubernetes Deployment, Service, Ingress, HPA, NetworkPolicy, and RBAC manifests for a Java microservice.
+
+**What Was Generated:** Helm chart with `values.yaml`, `values-dev.yaml`, `values-prod.yaml` and full template set.
+
+**Flaws Identified:**
+- NetworkPolicy egress rules were missing DNS (port 53) — pods could not resolve hostnames.
+- HPA missing `behavior` stanza — rapid scale-down caused request drops.
+- Ingress TLS secret name was hardcoded and incorrect for the actual cert.
+
+**Fixes Applied:**
+- Add egress rule allowing UDP/TCP port 53 to kube-dns CIDR.
+- Add `behavior.scaleDown.stabilizationWindowSeconds: 300` to HPA spec.
+- Replace hardcoded TLS secret name with Helm value `{{ .Values.ingress.tls.secretName }}`.
+
+---
+
+## 3. CI/CD Pipeline
+
+**Original Prompt / Intent:** Generate a GitHub Actions workflow for build, Trivy scan, SBOM, ECR push, cosign signing, and Helm deploy to EKS.
+
+**What Was Generated:** Three-job pipeline: Build and Test → Docker Build and Security Scan → Deploy to EKS.
+
+**Flaws Identified:**
+- ECR IMMUTABLE tag strategy was incorrect — used `latest` which cannot overwrite existing tags.
+- cosign attest step missing `--type cyclonedx` flag, causing attestation format errors.
+- OIDC permissions block missing `id-token: write`, breaking AWS authentication.
+
+**Fixes Applied:**
+- Replace `latest` with `git-<sha>` tag strategy; add semver tags for release events.
+- Add `--type cyclonedx` to the cosign attest command.
+- Add `permissions: id-token: write` to the deploy job block.
+
+---
+
+## 4. PII Protection
+
+**Original Prompt / Intent:** Generate a PII proxy pipeline that intercepts outbound LLM calls, redacts names and coordinates, and audit-logs all transactions.
+
+**What Was Generated:** `PiiDetector` → `PiiRedactor` → `PiiProxyService` → `AuditLogger` chain in Kotlin, plus a Go sidecar.
+
+**Flaws Identified:**
+- Regex patterns missed multi-word names with hyphens (e.g., "Mary-Jane Smith").
+- AuditLogger wrote multi-line JSON, breaking Fluent Bit single-line parsing.
+- Go sidecar Dockerfile ran as root — inconsistent with security policy.
+
+**Fixes Applied:**
+- Update name regex to include hyphenated patterns: `[A-Z][a-z]+-[A-Z][a-z]+`.
+- Change AuditLogger to emit single-line JSON using `JsonGenerator.Feature.FLUSH_PASSED_TO_STREAM`.
+- Add `RUN adduser -D appuser && USER appuser` to sidecar Dockerfile.
+
+---
+
+## 5. Terraform
+
+**Original Prompt / Intent:** Generate reusable Terraform modules for VPC, EKS, ECR, IAM, and Secrets Manager targeting AWS ap-southeast-2.
+
+**What Was Generated:** Five modules under `devops/terraform/modules/` with prod and dev environment compositions.
+
+**Flaws Identified:**
+- KMS key policy missing `kms:Decrypt` for EKS node role — pods could not read secrets.
+- IMDS hop limit set to 1 — pods inside containers could not reach instance metadata.
+- ECR lifecycle policy had incorrect filter syntax for `pr-*` tags.
+
+**Fixes Applied:**
+- Add `kms:Decrypt` and `kms:DescribeKey` to the EKS node role KMS policy statement.
+- Change `http_put_response_hop_limit` from 1 to 2 in the launch template.
+- Correct lifecycle policy filter from `tagPrefixList` to `tagPatternList` with `pr-*`.
+
+---
+
+## 6. API Endpoints
+
+**Original Prompt / Intent:** Generate REST API endpoints for person CRUD and location-based proximity search using the Haversine formula.
+
+**What Was Generated:** `PersonController` under `/api/v1/persons` with GET, POST, PUT, DELETE and a `/nearby` endpoint.
+
+**Flaws Identified:**
+- `/nearby` endpoint missing input validation — negative radius values caused incorrect results.
+- API response missing standard error body format — clients received empty 400 responses.
+- OpenAPI spec missing `@Parameter` annotations — Swagger UI showed undocumented query params.
+
+**Fixes Applied:**
+- Add `@Min(0)` constraint to the radius parameter and `@Validated` to the controller.
+- Add `@ControllerAdvice` handler returning standardized `{"error": "...", "status": N}` body.
+- Add `@Parameter(description = "...", required = true)` to all endpoint query parameters.
+
+---
+
+## 7. Actuator & Health Checks
+
+**Original Prompt / Intent:** Expose Spring Boot Actuator health endpoints for Kubernetes liveness and readiness probes.
+
+**What Was Generated:** `management.endpoints.web.exposure.include=health,info` configuration with basic probe setup.
+
+**Flaws Identified:**
+- Actuator health endpoint exposed all component details publicly — information leakage risk.
+- Readiness probe interval too aggressive (3s) — caused false pod restarts during GC pauses.
+- Missing `livenessState` and `readinessState` groups — Kubernetes could not distinguish probe types.
+
+**Fixes Applied:**
+- Set `management.endpoint.health.show-details=when-authorized` to restrict detail visibility.
+- Change readiness probe `periodSeconds` from 3 to 10 and add `failureThreshold: 3`.
+- Add explicit `health.group.liveness.include=livenessState` and `health.group.readiness.include=readinessState,db`.
+
+---
+
 ## Document Positioning / 文档定位
 
 - EN: This is a bilingual, interview-focused deep rewrite for production communication.
