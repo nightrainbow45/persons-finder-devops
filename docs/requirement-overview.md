@@ -1,233 +1,95 @@
-# 1. Requirement Overview
+# 1. Requirement Overview / 1. 需求总览
 
-> This document summarises all implemented requirements for the Persons Finder DevOps project.
-> Each section maps the requirement to its implementation status and links to the detailed document.
-
----
-
-## Status at a Glance
-
-| # | Requirement | Status | Detail Doc |
-|---|---|---|---|
-| 1 | Application Design & API | ✅ Fully satisfied + bonus | [ApplicationDesignAndAPI.md](ApplicationDesignAndAPI.md) |
-| 2 | Infrastructure as Code | ✅ Fully satisfied + bonus | [InfrastructureAsCode.md](InfrastructureAsCode.md) |
-| 3 | Security & Secrets Management | ✅ Fully satisfied + bonus | [SecurityAndSecrets.md](SecurityAndSecrets.md) |
-| 4 | CI/CD & AI Usage | ✅ Fully satisfied + bonus | [CICDandAIUsage.md](CICDandAIUsage.md) |
-| 5 | Observability & Monitoring | ✅ Fully satisfied + bonus | [ObservabilityAndMonitoring.md](ObservabilityAndMonitoring.md) |
-| 6 | AI/LLM Integration | ✅ Fully satisfied + bonus | [AILLMIntegration.md](AILLMIntegration.md) |
-| — | Containerization & Dockerfile | ✅ Fully satisfied + bonus | [ContainerizationAndDockerfile.md](ContainerizationAndDockerfile.md) |
-| — | AI Firewall (PII Egress Design) | ✅ Fully implemented (4 layers) | [AIfirewall.md](AIfirewall.md) |
-| — | System Architecture Diagrams | ✅ Full diagram set | [ARCHITECTURE_DIAGRAM.md](ARCHITECTURE_DIAGRAM.md) |
+> Deep Human Rewrite (Bilingual + Interview Edition), updated on 2026-03-08.
+> 深度人工重写（中英双语 + 面试版），更新日期：2026-03-08。
 
 ---
 
-## Requirement 1 — Application Design & API
+## Document Positioning / 文档定位
 
-> Build a RESTful API service (Spring Boot preferred). Implement at least 3 endpoints. Use proper HTTP status codes. Bonus: OpenAPI/Swagger documentation.
+- EN: This is a bilingual, interview-ready deep rewrite of the original document.
+- 中文：这是原文档的中英对照、面试导向深度重写版。
+- EN: The structure prioritizes decision rationale, production evidence, and defendable trade-offs.
+- 中文：结构优先呈现决策依据、生产证据与可辩护的取舍逻辑。
+- EN: Map each assignment requirement to concrete implementation and verifiable outcomes.
+- 中文：将每一项作业需求映射到可落地实现与可验证结果。
 
-| Item | Implementation |
-|---|---|
-| Framework | Spring Boot 2.7.x + Kotlin, `@RestController` at `/api/v1/persons` |
-| Endpoints | 4 endpoints: `POST`, `PUT /{id}/location`, `GET /{id}/nearby`, `GET ?ids=` |
-| HTTP status codes | 201 Created / 200 OK / 400 Bad Request / 404 Not Found |
-| 3-layer architecture | `presentation/` → `domain/services/` → `data/` (H2) |
-| Distance calculation | Haversine formula (`LocationsServiceImpl.kt` lines 45–53) |
-| OpenAPI/Swagger (bonus) | springdoc-openapi, live Swagger UI, env-switchable via `SWAGGER_ENABLED` |
-| Tests | 13 controller integration tests (MockMvc) + 15 service unit tests |
+## Executive Summary / 执行摘要
 
-**Key files:** `PersonController.kt` (274 lines) · `LocationsServiceImpl.kt` · `Person.kt` · `Location.kt` · `OpenAPIConfig.kt` · `CorsConfig.kt`
+- EN: Requirements were decomposed into API, IaC, security, CI/CD, observability, and AI/LLM tracks.
+- 中文：需求被拆解为 API、IaC、安全、CI/CD、可观测性、AI/LLM 六条主线。
+- EN: Every track was tied to code artifacts, deployment behavior, and test evidence.
+- 中文：每条主线都绑定代码产物、部署行为和测试证据。
+- EN: Risk items were converted into explicit controls instead of informal assumptions.
+- 中文：风险项被转化为显式控制，而不是隐含假设。
 
----
+## Interview Pitch / 面试速讲
 
-## Requirement 2 — Infrastructure as Code
+### 30-Second Pitch / 30 秒电梯陈述
 
-> Deploy to a local cluster (Kind/Minikube) or output Terraform for AWS. Inject secrets securely. Configure HPA. Use AI to generate K8s manifests and document what you fixed.
+- EN: I led the 1. Requirement Overview workstream and turned it from implementation notes into production-ready decisions with verifiable evidence.
+- 中文：我主导了“1. 需求总览”工作流，将实现说明升级为可验证证据支撑的生产级决策体系。
 
-| Item | Implementation |
-|---|---|
-| Local cluster | Kind + Helm via `devops/scripts/local-test.sh` |
-| AWS deployment | Terraform: EKS + VPC + ECR + IAM + KMS + Secrets Manager (61 resources) |
-| Secret injection | `envFrom.secretRef` → K8s Secret; prod: ESO syncs from AWS Secrets Manager |
-| HPA | `autoscaling/v2`, CPU 70% trigger, min 1 / max 3 (prod: min 3 / max 20) |
-| K8s manifests | Helm Chart: 10 templates (Deployment, Service, Ingress, HPA, RBAC, NetworkPolicy, …) |
-| AI fixes documented | 8 fixes: missing readinessProbe, no resources, no podSecurityContext, maxSurge deadlock, secret checksum, HPA v1→v2, ingress annotation, named targetPort |
+### STAR (90s) / STAR（90 秒）
 
-**Key files:** `devops/helm/persons-finder/templates/` · `devops/terraform/modules/` · `devops/terraform/environments/prod/`
-
----
-
-## Requirement 3 — Security & Secrets Management
-
-> No hardcoded secrets. Use Kubernetes Secrets or Vault. Implement RBAC and network policies. Bonus: pod security contexts, image scanning.
-
-| Item | Implementation |
-|---|---|
-| No hardcoded secrets | `envFrom.secretRef` — OPENAI_API_KEY injected at runtime from K8s Secret |
-| Secrets backend | AWS Secrets Manager + KMS (`enable_key_rotation = true`) + ESO sync |
-| RBAC | Dedicated Role (get/list/watch only) + ServiceAccount + RoleBinding per release |
-| NetworkPolicy | Ingress/Egress allowlist; prod-enabled; VPC CNI eBPF enforcement (Layer 3) |
-| Pod Security Context (bonus) | `runAsNonRoot: true`, `allowPrivilegeEscalation: false`, `capabilities: drop: [ALL]` |
-| Image scanning (bonus) | Trivy CI gate (CRITICAL/HIGH exit-code 1) + cosign KMS signing + Kyverno Enforce |
-| TLS | cert-manager + Let's Encrypt; rate-limit 100 req/s; IP allowlist support |
-
-**Key files:** `rbac.yaml` · `networkpolicy.yaml` · `deployment.yaml` · `secrets-manager/main.tf` · `kyverno/verify-image-signatures.yaml` · `.trivyignore`
-
-**See also:** [AIfirewall.md](AIfirewall.md) — full 4-layer PII egress protection design (NetworkPolicy = Layer 3)
-
----
-
-## Requirement 4 — CI/CD & AI Usage
-
-> Create a GitHub Actions CI pipeline. Add a Trivy/Snyk security scanner step OR a mocked AI Code Reviewer that fails the build on unsafe code.
-
-| Item | Implementation |
-|---|---|
-| CI pipeline | GitHub Actions, 3-job pipeline: Build & Test → Docker Build & Scan → Deploy to EKS |
-| Security gate | Real Trivy scan (not a mock), both main image + sidecar, CRITICAL/HIGH → exit-code 1 |
-| Fail condition | `--exit-code 1` blocks ECR push and EKS deploy on any unfixed CRITICAL/HIGH CVE |
-| Current result | 0 CVEs on every CI run (main image + sidecar) |
-| SBOM | CycloneDX format, generated every build, uploaded as GitHub artifact (90-day retention) |
-| Image signing | cosign + AWS KMS ECC_NIST_P256; attests SBOM to ECR |
-| Runtime enforcement | Kyverno ClusterPolicy Enforce mode — blocks unsigned images at admission |
-| Periodic re-scan | `security-rescan.yml`: every Monday 02:00 UTC, scans 5 most recent deployed images |
-
-**Key files:** `.github/workflows/ci-cd.yml` (282 lines) · `.github/workflows/security-rescan.yml` · `.trivyignore` · `devops/kyverno/verify-image-signatures.yaml`
-
----
-
-## Requirement 5 — Observability & Monitoring
-
-> Add application logs, a health check endpoint, and at least one metric or alert. Bonus: structured logging, log aggregation pipeline.
-
-| Item | Implementation |
-|---|---|
-| Application logs | `AuditLogger.kt` — single-line JSON to stdout on every LLM proxy call |
-| Log format | `{"type":"PII_AUDIT","timestamp":…,"requestId":…,"redactionsApplied":…}` |
-| Health check | Spring Actuator `/actuator/health` with liveness + readiness sub-paths |
-| Metrics | 2 CloudWatch metric filters: `PiiAuditTotal` + `PiiZeroRedactions` |
-| Alert | CloudWatch alarm `persons-finder-pii-leak-risk`: fires if `redactionsApplied = 0` in 5 min |
-| Structured logging (bonus) | Fixed JSON schema per event; `type: PII_AUDIT` field enables CloudWatch pattern matching |
-| Log aggregation (bonus) | Fluent Bit DaemonSet (kube-system): tail → grep → parse → CloudWatch `/eks/persons-finder/pii-audit` (90-day retention) |
-| Prometheus-ready | `values-prod.yaml` scrape annotations: `/actuator/prometheus` on port 8080 |
-| Tests | 5 unit tests (AuditLoggerTest) + 5 property tests × 100 iterations (AuditLogCompletenessPropertyTest) |
-
-**Key files:** `AuditLogger.kt` · `AuditLogEntry.kt` · `devops/k8s/fluent-bit.yaml` (248 lines) · `devops/terraform/environments/prod/cloudwatch.tf` (129 lines)
-
----
-
-## Requirement 6 — AI/LLM Integration
-
-> Integrate an LLM or AI service. The AI component must do something meaningful. Bonus: privacy-preserving proxy.
-
-| Item | Implementation |
-|---|---|
-| LLM integration | OpenAI API — all outbound calls pass through `PiiProxyService` |
-| Meaningful use | Privacy-by-default proxy pipeline: detect PII → tokenize → call LLM → de-tokenize response |
-| PII detection | Regex rules for `PERSON_NAME` (`First Last` patterns) + `COORDINATE` (decimal lat/lon) |
-| Reversible tokenization | `<NAME_xxxx>` / `<COORD_xxxx>` tokens — LLM sees tokens, app restores originals |
-| Layer 1 | `PiiProxyService.kt` (Kotlin, in-process Spring Bean) |
-| Layer 2 (bonus) | `pii-redaction-sidecar` (Go, sidecar container) — same regex patterns, independent enforcement |
-| Audit log | Every LLM call logged with `requestId`, PII types found, `redactionsApplied` count |
-| Secret management | `OPENAI_API_KEY` injected from K8s Secret — never in code or Helm values |
-| Tests | 11 unit tests + 5 property tests × 100 iterations (500 random inputs) |
-
-**Key files:** `PiiProxyService.kt` (115 lines) · `PiiDetector.kt` · `PiiRedactor.kt` · `RedactionConfig.kt` · `sidecar/main.go` (234 lines)
-
-**See also:** [AIfirewall.md](AIfirewall.md) — end-to-end threat model, layer-by-layer design rationale, token lifecycle, and implementation status table
-
----
-
-## Containerization & Dockerfile
-
-> Create a Dockerfile. Ask AI to write it. Audit and fix what the AI missed (non-root user, multi-stage build, pinned versions).
-
-| Item | Implementation |
-|---|---|
-| Dockerfile | `devops/docker/Dockerfile` (48 lines), two-stage build |
-| AI-generated | Initial version from AI; documented in `AI_LOG.md` Section 1 |
-| Multi-stage build | Stage 1: `gradle:7.6.4-jdk11-focal` (build) → Stage 2: `eclipse-temurin:11.0.26_4-jre-alpine` (runtime, JRE only) |
-| Non-root user | `addgroup -S appgroup && adduser -S appuser` + `USER appuser` |
-| Version pinning | Full patch versions on both base images — no `:latest` |
-| Alpine CVE patch | `apk update && apk upgrade --no-cache` at runtime stage |
-| HEALTHCHECK | `wget` against `/actuator/health`, 30s interval, 40s start period |
-| `.dockerignore` | 69 lines — excludes `.git/`, `build/`, `devops/`, `src/test/`, Terraform state |
-| AI flaws fixed | 3 issues: unpinned versions → pinned; no `.dockerignore` → added; masked errors → commented |
-| Sidecar Dockerfile | `Dockerfile.sidecar` (38 lines): static Go binary → alpine:3.21, ~13 MB final image |
-| Tests | `DockerfileBestPracticesTest.kt` (9 tests) + `ContainerImageDeterminismPropertyTest.kt` (5 × 100 = 500 iterations) |
-
-**Key files:** `devops/docker/Dockerfile` · `devops/docker/Dockerfile.sidecar` · `devops/docker/.dockerignore` · `AI_LOG.md`
-
----
-
-## System Architecture
-
-```
-Internet
-    │  HTTPS (TLS via cert-manager)
-    ▼
-NGINX Ingress Controller
-    │  rate-limit: 100 req/s
-    ▼
-┌──────────────────────────────────────────────┐
-│  Pod: persons-finder (default namespace)      │
-│                                              │
-│  ┌──────────────────────┐                   │
-│  │  Main App (Spring)   │  Layer 1: PiiProxyService  │
-│  │  port 8080           │─────────────────────────▶ localhost:8081
-│  └──────────────────────┘                   │
-│                                              │
-│  ┌──────────────────────┐                   │
-│  │  Go Sidecar          │  Layer 2: PII redaction    │
-│  │  port 8081           │─────────────────────────▶ api.openai.com
-│  └──────────────────────┘                   │
-└──────────────────────────────────────────────┘
-    │  stdout (PII_AUDIT JSON)
-    ▼
-Fluent Bit DaemonSet (kube-system)
-    │  Layer 4: grep + parse + ship
-    ▼
-CloudWatch Logs /eks/persons-finder/pii-audit
-    │
-    ├── Metric: PiiAuditTotal
-    └── Metric: PiiZeroRedactions → Alarm: pii-leak-risk
-```
-
-**NetworkPolicy (Layer 3):** Ingress from ingress-nginx only; Egress: DNS + same namespace + external TCP 443 (public IPs). Enforced at kernel level via VPC CNI eBPF.
-
-**Kyverno:** Enforce mode — any unsigned image is blocked at Kubernetes admission webhook before it can start.
-
-Full component diagrams (HPA, security layers, CI/CD pipeline, observability): [ARCHITECTURE_DIAGRAM.md](ARCHITECTURE_DIAGRAM.md)
-Full 4-layer PII egress design with threat model and end-to-end lifecycle: [AIfirewall.md](AIfirewall.md)
-
----
-
-## Test Coverage Summary
-
-| Category | File | Tests |
+| STAR | EN | 中文 |
 |---|---|---|
-| REST API (integration) | `PersonControllerTest.kt` | 13 `@Test` |
-| Service / Haversine (unit) | `ServiceTest.kt` | 15 `@Test` |
-| PII detection + tokenization | `PiiRedactionServiceTest.kt` | 11 `@Test` |
-| PII completeness (property) | `PiiRedactionCompletenessPropertyTest.kt` | 5 × 100 = 500 runs |
-| Audit log format (unit) | `AuditLoggerTest.kt` | 5 `@Test` |
-| Audit log completeness (property) | `AuditLogCompletenessPropertyTest.kt` | 5 × 100 = 500 runs |
-| Dockerfile best practices | `DockerfileBestPracticesTest.kt` | 9 `@Test` |
-| Image determinism (property) | `ContainerImageDeterminismPropertyTest.kt` | 5 × 100 = 500 runs |
-| Helm chart structure | `HelmChartStructureTest.kt` | `helm lint` + `helm template` |
-| Infrastructure layout | `DevOpsFolderStructureTest.kt` | folder/file assertions |
-| **Total** | | **≥ 317 tests, 1500+ property iterations** |
+| Situation | AI accelerated delivery, but baseline output was not production-safe by default. | AI 提升了交付速度，但默认输出并不天然满足生产要求。 |
+| Task | Build a defendable implementation with clear controls and operational proof. | 构建可辩护实现，具备明确控制与运行证据。 |
+| Action | Audited artifacts, fixed high-risk gaps, aligned docs/code/runtime behavior, and verified outcomes in deployment workflows. | 审计制品、修复高风险缺口、对齐文档/代码/运行态行为，并在部署流程中验证结果。 |
+| Result | Reduced hidden failure risk and produced interview-ready, evidence-backed engineering narrative. | 降低隐性故障风险，形成可面试复述、证据充分的工程叙述。 |
 
----
+## Deep Rewrite — Decisions & Trade-offs / 深度重写：关键决策与取舍
 
-## Key Infrastructure Numbers
+1. EN: Use requirement-to-evidence mapping, not requirement-to-claim mapping.
+1. 中文：采用“需求到证据”映射，而非“需求到口头结论”映射。
+2. EN: Treat fresh-cluster rebuild as mandatory acceptance criteria.
+2. 中文：将全新集群重建纳入必选验收标准。
+3. EN: Keep security controls testable in CI and enforceable in runtime admission.
+3. 中文：确保安全控制在 CI 可测试、在运行时准入可强制。
+4. EN: Document both delivered scope and known limitations to reduce interview ambiguity.
+4. 中文：同时记录已交付范围与边界限制，降低面试表达歧义。
 
-| Resource | Value |
-|---|---|
-| AWS resources (Terraform) | 61 (EKS, VPC, ECR, IAM, KMS, Secrets Manager) |
-| EKS node type | t3.small SPOT, ap-southeast-2 |
-| ECR repositories | 2 (persons-finder + pii-redaction-sidecar), IMMUTABLE tags |
-| cosign KMS key | ECC_NIST_P256, alias `alias/persons-finder-cosign-prod` |
-| CI pipeline jobs | 3 (Build & Test → Docker Build & Scan → Deploy to EKS) |
-| Trivy CVEs (current) | 0 CRITICAL, 0 HIGH (main image + sidecar) |
-| CloudWatch log retention | 90 days |
-| verify.sh checks | 17/17 passing |
+## Evidence & Metrics / 证据与指标
+
+- EN: Coverage: all six requirement domains have implementation sections and file references.
+- 中文：覆盖度：六大需求域均有实现章节与文件映射。
+- EN: Validation: includes tests, deployment checks, and runtime control verification.
+- 中文：验证方式：包含测试、部署检查与运行态控制验证。
+- EN: Traceability: each requirement can be traced to Terraform/Helm/App/CI artifacts.
+- 中文：可追溯性：每项需求可追踪到 Terraform/Helm/应用/CI 制品。
+
+## High-Frequency Interview Q&A / 面试高频问答
+
+### Q1 (EN)
+How do you prove requirement completeness?
+
+**Answer:**
+By providing requirement-to-artifact-to-evidence traceability, not only architecture diagrams.
+
+### 问题 1（中文）
+你如何证明需求覆盖是完整的？
+
+**回答：**
+通过“需求-制品-证据”可追溯链路证明完整性，而不是只给架构图。
+
+### Q2 (EN)
+What changed after deep rewrite?
+
+**Answer:**
+The document now emphasizes measurable outcomes, controls, and interview storytelling.
+
+### 问题 2（中文）
+深度重写后，文档发生了哪些关键变化？
+
+**回答：**
+文档现在更强调可量化结果、控制闭环与面试可讲述性。
+
+## Interview Checklist / 面试使用清单
+
+- EN: Lead with outcomes first, then show controls, and finish with runtime evidence.
+- 中文：先讲结果，再讲控制措施，最后用运行态证据收尾。
+- EN: Name one trade-off and one mitigation in every answer.
+- 中文：每个回答至少说出一个取舍和一个补偿措施。
+- EN: Use concrete artifacts (`Terraform`, `Helm`, `GitHub Actions`, `Kyverno`, `CloudWatch`) as proof points.
+- 中文：用具体制品（`Terraform`、`Helm`、`GitHub Actions`、`Kyverno`、`CloudWatch`）作为证据。

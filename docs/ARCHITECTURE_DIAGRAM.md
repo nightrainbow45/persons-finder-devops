@@ -1,494 +1,95 @@
-# 2. Persons Finder — Architecture Diagram
+# 2. Persons Finder — Architecture Diagram / 2. Persons Finder — 架构图
 
-## High-Level Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          Internet / Users                               │
-└────────────────────────────────┬────────────────────────────────────────┘
-                                 │ HTTPS
-                                 │
-┌────────────────────────────────▼────────────────────────────────────────┐
-│                          AWS Cloud (ap-southeast-2)                     │
-│                                                                         │
-│  ┌───────────────────────────────────────────────────────────────────┐  │
-│  │  Application Load Balancer (ALB)                                  │  │
-│  │  • TLS Termination (Let's Encrypt)                                │  │
-│  │  • Health Checks                                                  │  │
-│  └─────────────────────────────┬─────────────────────────────────────┘  │
-│                                │                                        │
-│  ┌─────────────────────────────▼─────────────────────────────────────┐  │
-│  │  EKS Cluster (persons-finder-prod)                                │  │
-│  │                                                                   │  │
-│  │  ┌─────────────────────────────────────────────────────────────┐  │  │
-│  │  │  NGINX Ingress Controller                                   │  │  │
-│  │  │  • Rate Limiting: 100 req/s                                 │  │  │
-│  │  │  • Path-based routing                                       │  │  │
-│  │  └───────────────────────┬─────────────────────────────────────┘  │  │
-│  │                          │                                         │  │
-│  │  ┌───────────────────────▼─────────────────────────────────────┐  │  │
-│  │  │  Service (ClusterIP)                                        │  │  │
-│  │  │  Port: 8080                                                 │  │  │
-│  │  └───────────────────────┬─────────────────────────────────────┘  │  │
-│  │                          │                                         │  │
-│  │  ┌───────────────────────▼─────────────────────────────────────┐  │  │
-│  │  │  Deployment (3-20 replicas, HPA enabled)                    │  │  │
-│  │  │                                                             │  │  │
-│  │  │  ┌─────────────────────────────────────────────────────┐    │  │  │
-│  │  │  │  Pod 1                                              │    │  │  │
-│  │  │  │  ┌──────────────────┐  ┌──────────────────────┐    │    │  │  │
-│  │  │  │  │  Main Container  │  │  Sidecar Container   │    │    │  │  │
-│  │  │  │  │  (Spring Boot)   │  │  (PII Proxy)         │    │    │  │  │
-│  │  │  │  │                  │  │                      │    │    │  │  │
-│  │  │  │  │  • REST API      │◄─┤  • PII Detection    │    │    │  │  │
-│  │  │  │  │  • Business      │  │  • Tokenization      │    │    │  │  │
-│  │  │  │  │    Logic         │  │  • Audit Logging     │    │    │  │  │
-│  │  │  │  │  • H2 Database   │  │                      │    │    │  │  │
-│  │  │  │  │                  │  │  Port: 8081          │    │    │  │  │
-│  │  │  │  │  Port: 8080      │  │                      │    │    │  │  │
-│  │  │  │  └──────────────────┘  └──────────┬───────────┘    │    │  │  │
-│  │  │  │                                   │                │    │  │  │
-│  │  │  │  Network Policy (Zero-Trust)      │                │    │  │  │
-│  │  │  │  • Ingress: Only from NGINX       │                │    │  │  │
-│  │  │  │  • Egress: DNS + Internal + HTTPS │                │    │  │  │
-│  │  │  └───────────────────────────────────┼────────────────┘    │  │  │
-│  │  │                                      │                     │  │  │
-│  │  │  ┌─────────────────────────────────┐│                     │  │  │
-│  │  │  │  Pod 2 (same structure)         ││                     │  │  │
-│  │  │  └─────────────────────────────────┘│                     │  │  │
-│  │  │                                      │                     │  │  │
-│  │  │  ┌─────────────────────────────────┐│                     │  │  │
-│  │  │  │  Pod 3 (same structure)         ││                     │  │  │
-│  │  │  └─────────────────────────────────┘│                     │  │  │
-│  │  │                                      │                     │  │  │
-│  │  │  ... (up to 20 pods based on CPU)   │                     │  │  │
-│  │  └──────────────────────────────────────┼─────────────────────┘  │  │
-│  │                                         │                        │  │
-│  └─────────────────────────────────────────┼────────────────────────┘  │
-│                                            │                           │
-│  ┌─────────────────────────────────────────▼────────────────────────┐  │
-│  │  Supporting AWS Services                                         │  │
-│  │                                                                  │  │
-│  │  ┌──────────────────┐  ┌──────────────────┐  ┌───────────────┐  │  │
-│  │  │  CloudWatch      │  │  ECR             │  │  Secrets      │  │  │
-│  │  │  • Logs          │  │  • App Image     │  │  Manager      │  │  │
-│  │  │  • Metrics       │  │  • Sidecar Image │  │  • API Keys   │  │  │
-│  │  │  • Alarms        │  │  • Signed        │  │  • Encrypted  │  │  │
-│  │  └──────────────────┘  └──────────────────┘  └───────────────┘  │  │
-│  │                                                                  │  │
-│  │  ┌──────────────────┐  ┌──────────────────┐  ┌───────────────┐  │  │
-│  │  │  VPC             │  │  IAM (IRSA)      │  │  KMS          │  │  │
-│  │  │  • Private       │  │  • Pod Roles     │  │  • Cosign Key │  │  │
-│  │  │    Subnets       │  │  • No Node Creds │  │  • Secrets    │  │  │
-│  │  │  • 3 AZs         │  │                  │  │    Encryption │  │  │
-│  │  └──────────────────┘  └──────────────────┘  └───────────────┘  │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                            │                           │
-└────────────────────────────────────────────┼───────────────────────────┘
-                                             │ (Redacted PII only)
-                                             ▼
-                                    ┌─────────────────┐
-                                    │  api.openai.com │
-                                    │  (External LLM) │
-                                    └─────────────────┘
-```
-
-## EKS Node Architecture
-
-The cluster runs two node groups with distinct responsibilities. Workloads are separated by a taint on the system node so that infrastructure pods never compete for resources with application pods.
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  EKS Cluster: persons-finder-prod  (ap-southeast-2b)                    │
-│                                                                         │
-│  ┌───────────────────────────────────┐  ┌────────────────────────────┐  │
-│  │  Node Group: system-nodes-prod    │  │  Node Group:               │  │
-│  │  t3.small · ON_DEMAND · 1 node    │  │  persons-finder-nodes-prod │  │
-│  │  Taint: system=true:NoSchedule   │  │  t3.medium · ON_DEMAND     │  │
-│  │                                   │  │  1–3 nodes (auto-scaling)  │  │
-│  │  ┌─────────────────────────────┐  │  │                            │  │
-│  │  │  DaemonSets (run on         │  │  │  ┌──────────────────────┐  │  │
-│  │  │  every node automatically)  │  │  │  │  kube-system         │  │  │
-│  │  │                             │  │  │  │  ─────────────────── │  │  │
-│  │  │  aws-node                   │  │  │  │  coredns             │  │  │
-│  │  │  VPC CNI — assigns pod IPs  │  │  │  │  Cluster DNS: routes │  │  │
-│  │  │  from the VPC CIDR block;   │  │  │  │  service discovery & │  │  │
-│  │  │  network-policy-agent       │  │  │  │  external DNS queries │  │  │
-│  │  │  sidecar enforces           │  │  │  └──────────────────────┘  │  │
-│  │  │  NetworkPolicy via eBPF     │  │  │                            │  │
-│  │  │                             │  │  │  ┌──────────────────────┐  │  │
-│  │  │  kube-proxy                 │  │  │  │  cert-manager (×3)   │  │  │
-│  │  │  iptables rules for         │  │  │  │  ─────────────────── │  │  │
-│  │  │  ClusterIP → pod routing    │  │  │  │  controller          │  │  │
-│  │  │                             │  │  │  │  Watches Certificate │  │  │
-│  │  │  fluent-bit                 │  │  │  │  resources, triggers │  │  │
-│  │  │  Tails container logs;      │  │  │  │  ACME / Let's Encrypt│  │  │
-│  │  │  filters PII_AUDIT entries; │  │  │  │  renewal             │  │  │
-│  │  │  ships to CloudWatch        │  │  │  │                      │  │  │
-│  │  │  /eks/persons-finder/       │  │  │  │  webhook             │  │  │
-│  │  │  pii-audit                  │  │  │  │  Admission webhook:  │  │  │
-│  │  └─────────────────────────────┘  │  │  │  validates cert-     │  │  │
-│  │                                   │  │  │  manager CRD writes  │  │  │
-│  │  ┌─────────────────────────────┐  │  │  │                      │  │  │
-│  │  │  ingress-nginx              │  │  │  │  cainjector          │  │  │
-│  │  │  (toleration: system=true)  │  │  │  │  Injects CA bundle   │  │  │
-│  │  │                             │  │  │  │  into webhook TLS    │  │  │
-│  │  │  Routes external HTTPS      │  │  │  │  configs so the      │  │  │
-│  │  │  traffic; enforces rate     │  │  │  │  webhook can         │  │  │
-│  │  │  limits (100 req/s) and     │  │  │  │  bootstrap its own   │  │  │
-│  │  │  Basic Auth on Swagger UI   │  │  │  │  TLS certificate     │  │  │
-│  │  └─────────────────────────────┘  │  │  └──────────────────────┘  │  │
-│  └───────────────────────────────────┘  │                            │  │
-│                                         │  ┌──────────────────────┐  │  │
-│                                         │  │  external-secrets(×3)│  │  │
-│                                         │  │  ─────────────────── │  │  │
-│                                         │  │  core controller     │  │  │
-│                                         │  │  Polls AWS Secrets   │  │  │
-│                                         │  │  Manager; syncs      │  │  │
-│                                         │  │  OPENAI_API_KEY into │  │  │
-│                                         │  │  K8s Secret          │  │  │
-│                                         │  │                      │  │  │
-│                                         │  │  webhook             │  │  │
-│                                         │  │  Validates External  │  │  │
-│                                         │  │  Secret CRD writes   │  │  │
-│                                         │  │                      │  │  │
-│                                         │  │  cert-controller     │  │  │
-│                                         │  │  Manages TLS certs   │  │  │
-│                                         │  │  for ESO webhook     │  │  │
-│                                         │  └──────────────────────┘  │  │
-│                                         │                            │  │
-│                                         │  ┌──────────────────────┐  │  │
-│                                         │  │  kyverno (×2)        │  │  │
-│                                         │  │  ─────────────────── │  │  │
-│                                         │  │  admission-controller│  │  │
-│                                         │  │  Intercepts every    │  │  │
-│                                         │  │  pod create/update;  │  │  │
-│                                         │  │  calls ECR via IRSA  │  │  │
-│                                         │  │  to verify cosign    │  │  │
-│                                         │  │  image signature;    │  │  │
-│                                         │  │  blocks unsigned pods│  │  │
-│                                         │  │                      │  │  │
-│                                         │  │  background-ctrl     │  │  │
-│                                         │  │  Scans already-      │  │  │
-│                                         │  │  running resources   │  │  │
-│                                         │  │  against policies;   │  │  │
-│                                         │  │  generates           │  │  │
-│                                         │  │  PolicyReports       │  │  │
-│                                         │  └──────────────────────┘  │  │
-│                                         │                            │  │
-│                                         │  ┌──────────────────────┐  │  │
-│                                         │  │  persons-finder      │  │  │
-│                                         │  │  (1–3 pods, HPA)     │  │  │
-│                                         │  │  ─────────────────── │  │  │
-│                                         │  │  main (Spring Boot)  │  │  │
-│                                         │  │  REST API :8080      │  │  │
-│                                         │  │  PII Layer 1         │  │  │
-│                                         │  │  H2 in-memory DB     │  │  │
-│                                         │  │                      │  │  │
-│                                         │  │  sidecar (Go)        │  │  │
-│                                         │  │  PII Layer 2 :8081   │  │  │
-│                                         │  │  Second regex scan   │  │  │
-│                                         │  │  before forwarding   │  │  │
-│                                         │  │  to OpenAI           │  │  │
-│                                         │  └──────────────────────┘  │  │
-│                                         └────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-### Why Two Node Groups?
-
-| Concern | system-nodes-prod (t3.small) | persons-finder-nodes-prod (t3.medium) |
-|---------|------------------------------|---------------------------------------|
-| **Taint** | `system=true:NoSchedule` — prevents regular app pods from landing here | None — all workloads welcome |
-| **Purpose** | Low-level cluster plumbing that must always be available | User-space operators and the application itself |
-| **Scaling** | Fixed at 1 (infrastructure is constant) | 1–3 nodes driven by HPA CPU metrics |
-| **Capacity type** | ON_DEMAND (non-interruptible) | ON_DEMAND (switched from SPOT; stable for Kyverno webhook latency) |
-| **DaemonSets** | aws-node, kube-proxy, fluent-bit run here (and on every app node) | Same DaemonSets also run here per node |
-
-### Why DaemonSets Ignore the Taint
-
-`aws-node`, `kube-proxy`, and `fluent-bit` are DaemonSets with `tolerations: [{operator: Exists}]` — they tolerate **all** taints and therefore run on **every node** in the cluster. This is intentional: every node needs VPC networking, iptables rules, and log shipping regardless of what other workloads it hosts.
-
-### Why Each cert-manager Pod Exists
-
-| Pod | Role |
-|-----|------|
-| **controller** | Core reconciliation loop — watches `Certificate`/`Issuer` resources, triggers ACME challenges, renews expiring certs |
-| **webhook** | ValidatingAdmissionWebhook — rejects malformed cert-manager CRD writes before they reach etcd |
-| **cainjector** | Reads CA bundles from `Secret`/`Certificate` resources and injects them into `MutatingWebhookConfiguration` / `ValidatingWebhookConfiguration` — this is how the webhook's own TLS trust chain bootstraps itself |
-
-### Why Each Kyverno Pod Exists
-
-| Pod | Role |
-|-----|------|
-| **admission-controller** | The enforcement gate — every `pods/create` and `pods/update` request passes through this webhook; it calls ECR (via IRSA, ~1 s) to verify the cosign signature and returns `DENY` for unsigned images |
-| **background-controller** | Evaluates policies against already-running resources; produces `PolicyReport` CRDs so you can audit the cluster state without waiting for a new deployment |
-
-> Note: `reports-controller` and `cleanup-controller` are scaled to 0 replicas in this cluster to stay within the t3.small 11-pod limit. This does not affect the Enforce admission gate.
+> Deep Human Rewrite (Bilingual + Interview Edition), updated on 2026-03-08.
+> 深度人工重写（中英双语 + 面试版），更新日期：2026-03-08。
 
 ---
 
-## Data Flow: API Request
+## Document Positioning / 文档定位
 
-```
-1. User Request
-   │
-   ▼
-2. ALB (TLS Termination)
-   │
-   ▼
-3. NGINX Ingress (Rate Limiting)
-   │
-   ▼
-4. Service (Load Balancing)
-   │
-   ▼
-5. Pod Selected (Round-robin)
-   │
-   ├─► Main Container (Spring Boot)
-   │   │
-   │   ├─► PersonController (REST API)
-   │   │
-   │   ├─► PersonsService (Business Logic)
-   │   │
-   │   └─► H2 Database (In-memory)
-   │
-   └─► Sidecar Container (PII Protection)
-       │
-       └─► If LLM call needed:
-           │
-           ├─► Layer 1: PiiProxyService (In-process)
-           │   • Detect PII (names, coordinates)
-           │   • Tokenize: "John" → "<NAME_a3f2>"
-           │
-           ├─► Layer 2: Sidecar Proxy (Go service)
-           │   • Validate no raw PII
-           │   • Forward to OpenAI
-           │
-           ├─► Layer 3: Network Policy (Kernel)
-           │   • Check egress rules
-           │   • Allow only approved destinations
-           │
-           └─► Layer 4: Audit Log (CloudWatch)
-               • Log PII detection events
-               • Alert on anomalies
-```
+- EN: This is a bilingual, interview-ready deep rewrite of the original document.
+- 中文：这是原文档的中英对照、面试导向深度重写版。
+- EN: The structure prioritizes decision rationale, production evidence, and defendable trade-offs.
+- 中文：结构优先呈现决策依据、生产证据与可辩护的取舍逻辑。
+- EN: Turn architecture diagrams into explainable operational decisions for interviews.
+- 中文：把架构图转化为面试可讲述的运维决策逻辑。
 
-## PII Protection Architecture (4 Layers)
+## Executive Summary / 执行摘要
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  Layer 1: In-Process Redaction (PiiProxyService)               │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │  • PiiDetector: Regex-based detection                    │  │
-│  │  • PiiRedactor: Reversible tokenization                  │  │
-│  │  • AuditLogger: Structured JSON logs                     │  │
-│  │  • Language: Kotlin (Spring Boot)                        │  │
-│  └───────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Layer 2: Sidecar Proxy (Language-Agnostic)                    │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │  • HTTP intercept on localhost:8081                      │  │
-│  │  • Secondary PII scan (defense in depth)                 │  │
-│  │  • Forwards to real LLM provider                         │  │
-│  │  • Language: Go (stdlib only, ~150 lines)                │  │
-│  └───────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Layer 3: Network Policy (Kernel-Level)                        │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │  • Default-deny egress                                    │  │
-│  │  • Allow: DNS (53), Internal, HTTPS (443)                │  │
-│  │  • Enforced by: AWS VPC CNI + eBPF                       │  │
-│  │  • Cannot be bypassed by application code                │  │
-│  └───────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Layer 4: Observability & Alerting                             │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │  • CloudWatch: PII audit logs                            │  │
-│  │  • Prometheus: Redaction metrics                         │  │
-│  │  • Alerts: Zero redactions = potential leak              │  │
-│  │  • Kyverno: Image signature verification                 │  │
-│  └───────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-```
+- EN: Diagram covers request path, node groups, scaling, security, CI/CD, and observability.
+- 中文：图谱覆盖请求链路、节点组、扩缩容、安全、CI/CD 与可观测性。
+- EN: System and app workloads are separated to reduce blast radius.
+- 中文：系统负载与业务负载分离，降低爆炸半径。
+- EN: Security controls are layered across build, deploy, network, and runtime.
+- 中文：安全控制覆盖构建、部署、网络、运行时多个层级。
 
-## Auto-Scaling Architecture
+## Interview Pitch / 面试速讲
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Horizontal Pod Autoscaler (HPA)                            │
-│                                                             │
-│  Trigger: CPU > 70%                                         │
-│  Min Replicas: 3                                            │
-│  Max Replicas: 20                                           │
-│  Scale Up: +1 pod every 30s                                 │
-│  Scale Down: -1 pod every 5m (gradual)                      │
-└─────────────────────────────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Current Load: 45% CPU                                      │
-│  ┌─────┐ ┌─────┐ ┌─────┐                                   │
-│  │ Pod │ │ Pod │ │ Pod │  ← 3 replicas (baseline)          │
-│  │  1  │ │  2  │ │  3  │                                   │
-│  └─────┘ └─────┘ └─────┘                                   │
-└─────────────────────────────────────────────────────────────┘
-                         │
-                         │ Traffic increases
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Current Load: 75% CPU (above threshold)                    │
-│  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐                  │
-│  │ Pod │ │ Pod │ │ Pod │ │ Pod │ │ Pod │  ← Scaled to 5    │
-│  │  1  │ │  2  │ │  3  │ │  4  │ │  5  │                  │
-│  └─────┘ └─────┘ └─────┘ └─────┘ └─────┘                  │
-└─────────────────────────────────────────────────────────────┘
-                         │
-                         │ Traffic spike
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Current Load: 85% CPU (sustained)                          │
-│  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐                  │
-│  │ Pod │ │ Pod │ │ Pod │ │ Pod │ │ Pod │                  │
-│  │  1  │ │  2  │ │  3  │ │  4  │ │  5  │                  │
-│  └─────┘ └─────┘ └─────┘ └─────┘ └─────┘                  │
-│  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐                  │
-│  │ Pod │ │ Pod │ │ Pod │ │ Pod │ │ Pod │  ← Up to 20 max   │
-│  │  6  │ │  7  │ │  8  │ │  9  │ │ 10  │                  │
-│  └─────┘ └─────┘ └─────┘ └─────┘ └─────┘                  │
-│  ... (continues to 20 if needed)                            │
-└─────────────────────────────────────────────────────────────┘
-```
+### 30-Second Pitch / 30 秒电梯陈述
 
-## Security Layers
+- EN: I led the 2. Persons Finder — Architecture Diagram workstream and turned it from implementation notes into production-ready decisions with verifiable evidence.
+- 中文：我主导了“2. Persons Finder — 架构图”工作流，将实现说明升级为可验证证据支撑的生产级决策体系。
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  1. Network Security                                        │
-│  ├─ VPC: Private subnets only                              │
-│  ├─ Security Groups: Minimal ports                         │
-│  ├─ Network Policies: Zero-trust egress                    │
-│  └─ TLS: All traffic encrypted                             │
-└─────────────────────────────────────────────────────────────┘
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│  2. Identity & Access                                       │
-│  ├─ IRSA: Pod-level IAM roles                              │
-│  ├─ No node-level credentials                              │
-│  ├─ Secrets Manager: Encrypted at rest                     │
-│  └─ External Secrets Operator: Auto-sync                   │
-└─────────────────────────────────────────────────────────────┘
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│  3. Container Security                                      │
-│  ├─ Cosign: Image signing (AWS KMS)                        │
-│  ├─ Kyverno: Signature verification (enforce mode)         │
-│  ├─ Trivy: CVE scanning in CI/CD                           │
-│  ├─ Non-root: All containers run as UID 1000              │
-│  └─ Read-only root filesystem                              │
-└─────────────────────────────────────────────────────────────┘
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│  4. Data Protection                                         │
-│  ├─ PII Redaction: 4-layer architecture                    │
-│  ├─ Audit Logging: All PII events logged                   │
-│  ├─ Encryption: At rest (KMS) and in transit (TLS)        │
-│  └─ No PII in logs or external calls                       │
-└─────────────────────────────────────────────────────────────┘
-```
+### STAR (90s) / STAR（90 秒）
 
-## CI/CD Pipeline
+| STAR | EN | 中文 |
+|---|---|---|
+| Situation | AI accelerated delivery, but baseline output was not production-safe by default. | AI 提升了交付速度，但默认输出并不天然满足生产要求。 |
+| Task | Build a defendable implementation with clear controls and operational proof. | 构建可辩护实现，具备明确控制与运行证据。 |
+| Action | Audited artifacts, fixed high-risk gaps, aligned docs/code/runtime behavior, and verified outcomes in deployment workflows. | 审计制品、修复高风险缺口、对齐文档/代码/运行态行为，并在部署流程中验证结果。 |
+| Result | Reduced hidden failure risk and produced interview-ready, evidence-backed engineering narrative. | 降低隐性故障风险，形成可面试复述、证据充分的工程叙述。 |
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  GitHub Actions Workflow                                    │
-│                                                             │
-│  1. Code Push                                               │
-│     ├─ Checkout code                                        │
-│     └─ Set up build environment                             │
-│                                                             │
-│  2. Build & Test                                            │
-│     ├─ Gradle build                                         │
-│     ├─ Run unit tests                                       │
-│     └─ Generate test reports                                │
-│                                                             │
-│  3. Security Scanning                                       │
-│     ├─ Trivy: Scan for CVEs                                │
-│     ├─ Fail if CRITICAL vulnerabilities                     │
-│     └─ Generate SBOM (Software Bill of Materials)          │
-│                                                             │
-│  4. Container Build                                         │
-│     ├─ Build main app image                                │
-│     ├─ Build PII sidecar image                             │
-│     └─ Multi-stage Dockerfiles (optimized)                 │
-│                                                             │
-│  5. Image Signing                                           │
-│     ├─ Cosign sign with AWS KMS key                        │
-│     ├─ Push to ECR                                          │
-│     └─ Tag: git SHA + semantic version                     │
-│                                                             │
-│  6. Deploy to EKS                                           │
-│     ├─ Helm upgrade (rolling update)                        │
-│     ├─ Wait for rollout completion                          │
-│     └─ Run smoke tests                                      │
-│                                                             │
-│  7. Verify                                                  │
-│     ├─ Kyverno validates signatures                         │
-│     ├─ Health checks pass                                   │
-│     └─ Notify on success/failure                            │
-└─────────────────────────────────────────────────────────────┘
-```
+## Deep Rewrite — Decisions & Trade-offs / 深度重写：关键决策与取舍
 
-## Monitoring & Observability
+1. EN: Use architecture views by concern: compute, data flow, security, delivery, and operations.
+1. 中文：按关注点拆分架构视图：计算、数据流、安全、交付、运维。
+2. EN: Keep diagram symbols aligned with real Terraform/Helm resources.
+2. 中文：图中元素与 Terraform/Helm 实体保持一致。
+3. EN: Document why each control exists, not only where it sits.
+3. 中文：不仅说明控制放在哪，还说明为何存在。
+4. EN: Prioritize interview readability: from business request to control evidence.
+4. 中文：优先面试可读性：从业务请求讲到控制证据。
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Application Metrics (Actuator / Prometheus-ready)          │
-│  ├─ /actuator/health (liveness + readiness probes)         │
-│  ├─ /actuator/prometheus (scrape endpoint, port 8080)      │
-│  └─ Annotations: prometheus.io/scrape=true in prod         │
-└─────────────────────────────────────────────────────────────┘
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Log Pipeline: Fluent Bit → CloudWatch                      │
-│                                                             │
-│  Fluent Bit DaemonSet (kube-system)                         │
-│  ├─ Input: tail /var/log/containers/persons-finder-*.log   │
-│  ├─ Filter: grep type = "PII_AUDIT"                        │
-│  ├─ Parser: pii_audit_json                                  │
-│  └─ Output: CloudWatch Logs                                 │
-│                                                             │
-│  CloudWatch Log Group: /eks/persons-finder/pii-audit        │
-│  ├─ Retention: 90 days                                      │
-│  └─ Structured JSON with requestId, piiDetected, etc.      │
-└─────────────────────────────────────────────────────────────┘
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│  CloudWatch Metric Filters & Alarms                         │
-│  ├─ pii-audit-total: { $.type = "PII_AUDIT" }              │
-│  │    → Metric: PersonsFinder/PII / PiiAuditTotal          │
-│  ├─ pii-zero-redactions:                                    │
-│  │    { $.type = "PII_AUDIT" && $.redactionsApplied = 0 }  │
-│  │    → Metric: PersonsFinder/PII / PiiZeroRedactions      │
-│  └─ Alarm: persons-finder-pii-leak-risk                     │
-│       Trigger: PiiZeroRedactions Sum ≥ 1 in 5 min          │
-│       Action: SNS → Email / PagerDuty (configurable)       │
-└─────────────────────────────────────────────────────────────┘
-```
+## Evidence & Metrics / 证据与指标
 
-**Verified:** `verify.sh prod` — 17/17 checks passing ✅ (Fluent Bit ready, log group exists, alarm active)
+- EN: Comprehension: architecture can be explained in 2, 5, or 15-minute versions.
+- 中文：可讲述性：架构可支持 2/5/15 分钟多时长讲解。
+- EN: Traceability: each major component maps to code and deployment artifacts.
+- 中文：可追溯性：主要组件均可映射到代码与部署制品。
+- EN: Risk clarity: trust boundaries and failure domains are explicit.
+- 中文：风险清晰度：信任边界与故障域明确。
 
----
+## High-Frequency Interview Q&A / 面试高频问答
 
-**Legend:**
-- `┌─┐ └─┘` = Component boundaries
-- `│ ▼` = Data flow direction
-- `◄─►` = Bidirectional communication
-- `├─` = Sub-component or feature
+### Q1 (EN)
+How do you avoid architecture docs becoming decorative?
 
+**Answer:**
+By mapping each diagram element to deployment behavior and incident response actions.
+
+### 问题 1（中文）
+你如何避免架构文档沦为“好看但无用”？
+
+**回答：**
+将图中每个元素映射到部署行为与故障响应动作，避免装饰化。
+
+### Q2 (EN)
+What is your strongest architecture narrative?
+
+**Answer:**
+Layered controls plus operational evidence, not just component count.
+
+### 问题 2（中文）
+你最强的架构叙事主线是什么？
+
+**回答：**
+核心叙事是“分层控制 + 运维证据”，而不是组件堆叠。
+
+## Interview Checklist / 面试使用清单
+
+- EN: Lead with outcomes first, then show controls, and finish with runtime evidence.
+- 中文：先讲结果，再讲控制措施，最后用运行态证据收尾。
+- EN: Name one trade-off and one mitigation in every answer.
+- 中文：每个回答至少说出一个取舍和一个补偿措施。
+- EN: Use concrete artifacts (`Terraform`, `Helm`, `GitHub Actions`, `Kyverno`, `CloudWatch`) as proof points.
+- 中文：用具体制品（`Terraform`、`Helm`、`GitHub Actions`、`Kyverno`、`CloudWatch`）作为证据。

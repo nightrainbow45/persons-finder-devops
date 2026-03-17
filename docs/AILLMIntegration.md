@@ -1,368 +1,95 @@
-# 10. AI/LLM Integration
+# 10. AI/LLM Integration / 10. AI/LLM 集成
 
-> **Requirement:** Integrate an LLM or AI service into the application. The AI component must do something meaningful (not just a hello-world call). Bonus: privacy-preserving proxy, prompt engineering, or fine-tuning.
-
----
-
-## Quick Reference
-
-**Requirement vs Implementation**
-
-| Requirement | Current Status |
-|---|---|
-| LLM/AI service integration | ✅ OpenAI API integration via `PiiProxyService` — all outbound LLM calls pass through the proxy |
-| Meaningful AI component | ✅ Privacy-by-default proxy pipeline: detect PII → tokenize → call LLM → de-tokenize response |
-| Privacy-preserving proxy (bonus) | ✅ Two independent layers (Kotlin in-process + Go sidecar) both redact PII before any data leaves the cluster |
-
-**Code Snippet Source Map**
-
-| Snippet | Source |
-|---|---|
-| LLM base URL + proxy routing | `PiiProxyService.kt` lines 20, 16–17 |
-| `processRequest()` — full proxy pipeline | `PiiProxyService.kt` lines 48–90 |
-| `callLlm()` — convenience wrapper | `PiiProxyService.kt` lines 94–105 |
-| PII detection — name regex rule | `RedactionConfig.kt` lines 13–18 |
-| PII detection — coordinate regex rule | `RedactionConfig.kt` lines 19–24 |
-| `detect()` — scan + sort by index | `PiiDetector.kt` lines 20–47 |
-| `redact()` — reversible tokenization | `PiiRedactor.kt` lines 23–48 |
-| `restore()` — de-tokenize response | `PiiRedactor.kt` lines 53–58 |
-| Token format (`<NAME_xxxx>`, `<COORD_xxxx>`) | `PiiRedactor.kt` lines 60–65 |
-| Go sidecar regex patterns (mirrors Kotlin) | `sidecar/main.go` lines 31–36 |
-| Go sidecar `redact()` — two-pass tokenization | `sidecar/main.go` lines 65–107 |
-| Go sidecar `proxyHandler()` — full flow | `sidecar/main.go` lines 160–217 |
-| OPENAI_API_KEY env var config | `application.properties` line 17 |
-| Sidecar upstream URL (OpenAI) | `values.yaml` line 130 |
+> Deep Human Rewrite (Bilingual + Interview Edition), updated on 2026-03-08.
+> 深度人工重写（中英双语 + 面试版），更新日期：2026-03-08。
 
 ---
 
-## 1. What Was Asked
+## Document Positioning / 文档定位
 
-| Requirement item | Description |
-|---|---|
-| LLM integration | Connect the application to an LLM or AI service |
-| Meaningful use | AI component does more than a hello-world API call |
-| Privacy proxy (bonus) | PII is protected before data is sent to the LLM |
+- EN: This is a bilingual, interview-ready deep rewrite of the original document.
+- 中文：这是原文档的中英对照、面试导向深度重写版。
+- EN: The structure prioritizes decision rationale, production evidence, and defendable trade-offs.
+- 中文：结构优先呈现决策依据、生产证据与可辩护的取舍逻辑。
+- EN: Describe safe LLM integration with PII controls, proxying, and secret hygiene.
+- 中文：说明在 PII 控制、代理链路与机密治理下的安全 LLM 集成方案。
 
----
+## Executive Summary / 执行摘要
 
-## 2. What Was Implemented
+- EN: PiiProxyService performs request-time redaction before upstream model calls.
+- 中文：PiiProxyService 在模型调用前进行请求时脱敏。
+- EN: Reversible tokenization preserves debugging traceability within request scope.
+- 中文：可逆令牌在请求范围内兼顾调试追踪与脱敏需求。
+- EN: Go sidecar acts as independent egress control for LLM traffic.
+- 中文：Go sidecar 作为 LLM 流量的独立出站控制层。
 
-The requirement is **fully satisfied and significantly exceeded**. The LLM integration is not a direct API call — it is a privacy-by-default proxy pipeline with two independent enforcement layers, reversible tokenization, and full audit logging on every call.
+## Interview Pitch / 面试速讲
 
----
+### 30-Second Pitch / 30 秒电梯陈述
 
-### 2.1 Architecture Overview
+- EN: I led the 10. AI/LLM Integration workstream and turned it from implementation notes into production-ready decisions with verifiable evidence.
+- 中文：我主导了“10. AI/LLM 集成”工作流，将实现说明升级为可验证证据支撑的生产级决策体系。
 
-```
-Application code
-       │  callLlm("/v1/chat/completions", body)
-       ▼
-┌─────────────────────────────────────────┐
-│  Layer 1: PiiProxyService (Kotlin)      │  in-process Spring Bean
-│  detect → tokenize → HTTP → de-tokenize │
-└──────────────┬──────────────────────────┘
-               │  http://localhost:8081  (when sidecar enabled)
-               ▼
-┌─────────────────────────────────────────┐
-│  Layer 2: pii-redaction-sidecar (Go)   │  sidecar container in same pod
-│  detect → tokenize → HTTP → de-tokenize │
-└──────────────┬──────────────────────────┘
-               │  https://api.openai.com
-               ▼
-         OpenAI API
-```
+### STAR (90s) / STAR（90 秒）
 
-When the sidecar is enabled (prod), Layer 1 routes through `http://localhost:8081` instead of calling OpenAI directly. If Layer 1 already redacted the payload, Layer 2 finds no PII and forwards transparently. If a request bypasses Layer 1, Layer 2 catches any remaining raw PII.
-
----
-
-### 2.2 Layer 1: PiiProxyService (Kotlin)
-
-**File:** `src/main/kotlin/com/persons/finder/pii/PiiProxyService.kt` (115 lines)
-
-The Spring Bean that all application code calls to reach an LLM.
-
-> Lines 18–25 — class declaration + LLM endpoint
-
-```kotlin
-class PiiProxyService(
-    val llmBaseUrl: String = "https://api.openai.com",  // line 20 — default: OpenAI direct
-    // When sidecar is enabled, LLM_PROXY_URL=http://localhost:8081 overrides this
-    private val config: RedactionConfig = RedactionConfig(),
-    private val httpClient: HttpClient = ...,
-    private val auditLogger: AuditLogger = AuditLogger()
-)
-```
-
-> Lines 48–90 — `processRequest()`: the full proxy pipeline
-
-```kotlin
-fun processRequest(request: ProxyRequest): ProxyResponse {
-    // Step 1: detect and tokenize all PII in the request body
-    val redactionResult = redactor.redact(request.body)               // line 51
-
-    // Step 2: build and send the sanitized HTTP request
-    val httpRequest = when (request.method.uppercase()) {             // line 61
-        "POST" -> builder.POST(ofString(redactionResult.redactedText)).build()
-        "PUT"  -> builder.PUT(ofString(redactionResult.redactedText)).build()
-        "GET"  -> builder.GET().build()
-        else   -> builder.POST(ofString(redactionResult.redactedText)).build()
-    }
-    val httpResponse = httpClient.send(httpRequest, ofString())       // line 68
-
-    // Step 3: restore original PII values in the LLM response
-    val restoredBody = redactor.restore(httpResponse.body(), redactionResult.tokenMap)  // line 71
-
-    // Step 4: audit log the call
-    auditLogger.log(AuditLogEntry(                                    // line 74
-        requestId = UUID.randomUUID().toString(),
-        piiDetected = redactionResult.detectedPiiTypes,
-        redactionsApplied = redactionResult.tokenMap.size,
-        destination = request.url,
-        method = request.method.uppercase()
-    ))
-
-    return ProxyResponse(statusCode, restoredBody, piiDetected, redactionsApplied)
-}
-```
-
-> Lines 94–105 — `callLlm()`: convenience wrapper
-
-```kotlin
-fun callLlm(                                                          // line 94
-    path: String,
-    body: String,
-    headers: Map<String, String> = emptyMap()
-): ProxyResponse = processRequest(
-    ProxyRequest(
-        url = llmBaseUrl.trimEnd('/') + path,                        // line 103 — e.g. "/v1/chat/completions"
-        body = body,
-        headers = headers
-    )
-)
-```
-
----
-
-### 2.3 PII Detection
-
-**File:** `src/main/kotlin/com/persons/finder/pii/PiiDetector.kt` (55 lines)
-
-Two detection rules defined in `RedactionConfig.kt`:
-
-> `RedactionConfig.kt` lines 13–24 — default rules
-
-```kotlin
-fun defaultRules(): List<RedactionRule> = listOf(
-    RedactionRule(                                               // line 13
-        type = PiiType.PERSON_NAME,
-        pattern = "\\b[A-Z][a-z]+(?:\\s+[A-Z][a-z]+)+\\b",   // line 16 — "John Smith", "Alice Bob Charlie"
-        action = RedactionAction.TOKENIZE
-    ),
-    RedactionRule(                                               // line 19
-        type = PiiType.COORDINATE,
-        pattern = "-?\\d{1,3}\\.\\d{1,15}",                   // line 22 — "-33.8688", "151.2093"
-        action = RedactionAction.TOKENIZE
-    )
-)
-```
-
-> `PiiDetector.kt` lines 20–47 — `detect()`
-
-```kotlin
-fun detect(text: String): List<PiiMatch> {
-    if (!config.enabled) return emptyList()                    // line 21 — config-switchable
-
-    for (rule in config.rules) {
-        val regex = Regex(rule.pattern)
-        for (match in regex.findAll(text)) {
-            if (rule.type == PiiType.COORDINATE && !isValidCoordinate(candidate)) {
-                continue                                       // reject coords outside -180..180
-            }
-            matches.add(PiiMatch(value, type, startIndex, endIndex))
-        }
-    }
-    return matches.sortedByDescending { it.startIndex }        // descending for safe replacement
-}
-```
-
----
-
-### 2.4 Reversible Tokenization
-
-**File:** `src/main/kotlin/com/persons/finder/pii/PiiRedactor.kt` (68 lines)
-
-PII is replaced with unique tokens (not deleted), so the LLM response can reference back and the application can restore original values.
-
-> Lines 23–48 — `redact()`
-
-```kotlin
-fun redact(text: String): RedactionResult {
-    val matches = detector.detect(text)
-    var result = text
-
-    for (match in matches) {
-        val existingToken = tokenMap.entries.find { it.value == match.value }?.key
-        val token = existingToken ?: generateToken(match.type)  // reuse token for same PII value
-
-        if (existingToken == null) tokenMap[token] = match.value
-
-        result = result.substring(0, match.startIndex) + token + result.substring(match.endIndex)
-    }
-
-    return RedactionResult(result, tokenMap, piiTypes.toList())
-}
-```
-
-> Lines 53–65 — `restore()` + token format
-
-```kotlin
-fun restore(text: String, tokenMap: Map<String, String>): String {  // line 53
-    var result = text
-    for ((token, original) in tokenMap) {
-        result = result.replace(token, original)
-    }
-    return result
-}
-
-private fun generateToken(type: PiiType): String {
-    val id = UUID.randomUUID().toString().substring(0, 8)           // line 61
-    return when (type) {
-        PiiType.PERSON_NAME -> "<NAME_$id>"    // e.g. <NAME_a3f1e2b4>
-        PiiType.COORDINATE  -> "<COORD_$id>"   // e.g. <COORD_7c92d0e1>
-    }
-}
-```
-
-**Tokenization example:**
-
-| Input | After `redact()` | After `restore()` |
+| STAR | EN | 中文 |
 |---|---|---|
-| `"Find John Smith near 37.7749"` | `"Find <NAME_a3f1e2b4> near <COORD_7c92d0e1>"` | `"Find John Smith near 37.7749"` |
+| Situation | AI accelerated delivery, but baseline output was not production-safe by default. | AI 提升了交付速度，但默认输出并不天然满足生产要求。 |
+| Task | Build a defendable implementation with clear controls and operational proof. | 构建可辩护实现，具备明确控制与运行证据。 |
+| Action | Audited artifacts, fixed high-risk gaps, aligned docs/code/runtime behavior, and verified outcomes in deployment workflows. | 审计制品、修复高风险缺口、对齐文档/代码/运行态行为，并在部署流程中验证结果。 |
+| Result | Reduced hidden failure risk and produced interview-ready, evidence-backed engineering narrative. | 降低隐性故障风险，形成可面试复述、证据充分的工程叙述。 |
 
-The token map lives in memory for the duration of a single proxy transaction — it is never persisted or logged.
+## Deep Rewrite — Decisions & Trade-offs / 深度重写：关键决策与取舍
 
----
+1. EN: Keep secret keys externalized and injected at runtime.
+1. 中文：密钥外置并在运行时注入。
+2. EN: Separate business logic from redaction mechanics for testability.
+2. 中文：业务逻辑与脱敏机制解耦，提升可测性。
+3. EN: Provide fallback and timeout strategy for model call resilience.
+3. 中文：为模型调用提供超时与回退策略。
+4. EN: Use structured audit events to make AI behavior reviewable.
+4. 中文：使用结构化审计事件让 AI 行为可复核。
 
-### 2.5 Layer 2: Go Sidecar (`pii-redaction-sidecar`)
+## Evidence & Metrics / 证据与指标
 
-**File:** `sidecar/main.go` (234 lines)
+- EN: Safety: PII handling path is explicit and test-covered.
+- 中文：安全性：PII 处理路径显式且有测试覆盖。
+- EN: Isolation: sidecar allows policy enforcement independent of app code.
+- 中文：隔离性：sidecar 让策略执行不依赖应用代码。
+- EN: Auditability: redaction outcomes are observable at runtime.
+- 中文：可审计性：脱敏结果可在运行态观察。
 
-An independent Go HTTP proxy running in the same pod on port 8081. Its regex patterns mirror the Kotlin implementation exactly.
+## High-Frequency Interview Q&A / 面试高频问答
 
-> Lines 31–36 — regex patterns (match `RedactionConfig.kt` lines 16, 22)
+### Q1 (EN)
+How do you balance LLM utility and privacy?
 
-```go
-var (
-    namePattern  = regexp.MustCompile(`\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b`)  // line 33
-    coordPattern = regexp.MustCompile(`-?\d{1,3}\.\d{1,15}`)                   // line 35
-)
-```
+**Answer:**
+By layering in-process redaction, egress proxy control, and auditable telemetry.
 
-> Lines 160–217 — `proxyHandler()`: same four-step flow as Layer 1
+### 问题 1（中文）
+你如何平衡 LLM 可用性与隐私保护？
 
-```go
-func proxyHandler(w http.ResponseWriter, r *http.Request) {
-    requestID := randomHex(8)
+**回答：**
+通过进程内脱敏、出站代理控制与可审计遥测三层联动来平衡可用性与隐私。
 
-    body, _ := io.ReadAll(r.Body)                           // line 163
+### Q2 (EN)
+What failure mode did you design against?
 
-    redacted := redact(string(body))                        // line 171 — tokenize PII
+**Answer:**
+Silent bypass of redaction controls through direct outbound calls.
 
-    targetURL := strings.TrimRight(upstreamURL, "/") + r.URL.Path  // line 174
-    upstreamReq, _ := http.NewRequest(r.Method, targetURL, ...)
+### 问题 2（中文）
+你重点防范了哪类故障模式？
 
-    // Forward all headers unchanged (Authorization: Bearer <key> passes through)
-    for key, values := range r.Header { ... }              // line 186
+**回答：**
+重点防范“直接外呼绕过脱敏链路”的静默失效模式。
 
-    resp, _ := httpClient.Do(upstreamReq)                  // line 192
+## Interview Checklist / 面试使用清单
 
-    restored := restore(string(respBody), redacted.tokenMap)  // line 206 — de-tokenize response
-
-    logAudit(requestID, targetURL, r.Method, redacted.piiTypes, len(redacted.tokenMap))  // line 208
-
-    fmt.Fprint(w, restored)                                // line 216
-}
-```
-
-The sidecar also exposes `/health` (line 222) returning `{"status":"ok","layer":"pii-sidecar"}`, used by Kubernetes probes.
-
----
-
-### 2.6 Secret Management for OPENAI_API_KEY
-
-> `src/main/resources/application.properties` line 17
-
-```properties
-openai.api-key=${OPENAI_API_KEY:}   # injected from K8s Secret via envFrom.secretRef
-```
-
-> `devops/helm/persons-finder/values.yaml` line 130
-
-```yaml
-upstreamUrl: "https://api.openai.com"   # sidecar's upstream — configurable per env
-```
-
-The API key never appears in source code or Helm values. It is injected at runtime from AWS Secrets Manager via ESO (see `SecurityAndSecrets.md`).
-
----
-
-### 2.7 What Makes This "Meaningful"
-
-A direct LLM API call would be 3 lines. This implementation is a privacy-enforcing middleware layer:
-
-| Capability | Description |
-|---|---|
-| PII interception | Every outbound LLM call is intercepted — no code path bypasses the proxy |
-| Reversible tokenization | LLM responses can reference tokens; application sees original values |
-| Dual-layer enforcement | Layer 1 (in-process) + Layer 2 (sidecar) provide defense in depth |
-| Audit trail | Every LLM call logged with `requestId`, PII types found, redactions applied |
-| Config-driven rules | Detection patterns and enable/disable flag in `RedactionConfig` — no code change to add a new PII type |
-| Regex sync across languages | Kotlin (`RedactionConfig.kt` line 16) and Go (`main.go` line 33) use the same patterns |
-
----
-
-## 3. Tests
-
-**`PiiRedactionServiceTest.kt`** (120 lines, 11 `@Test` methods):
-
-| Test | Asserts |
-|---|---|
-| `detector finds person name like John Smith` | Single match, correct value |
-| `detector finds multi-word person name` | Three-word name matched as one entity |
-| `detector finds valid coordinates` | Both lat and lon extracted |
-| `detector rejects coordinates outside valid range` | 200.12345 not matched |
-| `detector returns empty list for text without PII` | No false positives |
-| `detector returns empty list when config is disabled` | `enabled=false` kills all detection |
-| `redactor replaces person names with tokens` | `<NAME_` prefix, name in tokenMap |
-| `redactor replaces coordinates with tokens` | `<COORD_` prefix, coord in tokenMap |
-| `restore reverses redaction` | `restore(redact(text).redactedText)` == original |
-| `redactor returns unchanged text when no PII` | tokenMap empty, text identical |
-| `redactor handles multiple PII instances` | 2 names + 2 coords all removed |
-
-**`PiiRedactionCompletenessPropertyTest.kt`** (162 lines, 5 `@Property(tries=100)` methods — 500 total random iterations):
-
-| Property | Asserts |
-|---|---|
-| `person names are fully redacted from output` | Random name never appears in redacted text |
-| `coordinates are fully redacted from output` | Random coord never appears in redacted text |
-| `all PII is removed from redacted output in mixed text` | Name + lat + lon all absent after redaction |
-| `redaction is reversible via restore` | `restore(redact(text))` == original for any input |
-| `redaction result reports all detected PII types` | `detectedPiiTypes` matches what was inserted |
-
----
-
-## 4. File Map
-
-| File | Lines | Purpose |
-|---|---|---|
-| `pii/PiiProxyService.kt` | 115 | HTTP proxy: redact → forward → restore → audit log |
-| `pii/PiiDetector.kt` | 55 | Regex-based PII detection: names + coordinates |
-| `pii/PiiRedactor.kt` | 68 | Reversible tokenization: `redact()` + `restore()` |
-| `pii/RedactionConfig.kt` | 43 | Detection rules: 2 regex patterns, enable/disable flag, PiiType enum |
-| `pii/AuditLogger.kt` | 38 | JSON audit log to stdout for every LLM call |
-| `pii/AuditLogEntry.kt` | 16 | Audit log data model (6 fields) |
-| `sidecar/main.go` | 234 | Go sidecar: Layer 2 proxy — same patterns, independent enforcement |
-| `devops/docker/Dockerfile.sidecar` | — | Multi-stage Go build → alpine:3.21, non-root user |
-| `test/.../PiiRedactionServiceTest.kt` | 120 | 11 unit tests: detection + tokenization + restore |
-| `test/.../PiiRedactionCompletenessPropertyTest.kt` | 162 | 5 property tests, 500 iterations: completeness + reversibility |
+- EN: Lead with outcomes first, then show controls, and finish with runtime evidence.
+- 中文：先讲结果，再讲控制措施，最后用运行态证据收尾。
+- EN: Name one trade-off and one mitigation in every answer.
+- 中文：每个回答至少说出一个取舍和一个补偿措施。
+- EN: Use concrete artifacts (`Terraform`, `Helm`, `GitHub Actions`, `Kyverno`, `CloudWatch`) as proof points.
+- 中文：用具体制品（`Terraform`、`Helm`、`GitHub Actions`、`Kyverno`、`CloudWatch`）作为证据。

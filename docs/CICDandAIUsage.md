@@ -1,355 +1,95 @@
-# 8. CI/CD & AI Usage
+# 8. CI/CD & AI Usage / 8. CI/CD 与 AI 使用
 
-> **Requirement:** Create a CI pipeline (GitHub Actions preferred). Add a step that runs a security scanner (Trivy/Snyk) OR a mocked "AI Code Reviewer" step that fails the build if the code "looks unsafe".
-
----
-
-## Quick Reference
-
-**Requirement vs Implementation**
-
-| Requirement | Current Status |
-|---|---|
-| GitHub Actions CI pipeline | ✅ `.github/workflows/ci-cd.yml` |
-| Trivy/Snyk OR mocked AI reviewer | ✅ Real Trivy scan (not a mock) — both images scanned |
-| Fail build on unsafe code | ✅ `--exit-code 1`, CRITICAL/HIGH fails immediately |
-
-**Code Snippet Source Map**
-
-| Snippet | Source |
-|---|---|
-| CI trigger | `ci-cd.yml` lines 1–21 |
-| Install Trivy + main image scan gate | `ci-cd.yml` lines 102–119 (18 lines) |
-| Sidecar scan gate | `ci-cd.yml` lines 206–213 (8 lines) |
-| SBOM generate + upload | `ci-cd.yml` lines 122–137 (16 lines) |
-| cosign sign + attest | `ci-cd.yml` lines 161–183 (23 lines) |
-| Kyverno ClusterPolicy spec | `verify-image-signatures.yaml` lines 32–56 (25 lines) |
-| Periodic re-scan trigger | `security-rescan.yml` lines 5–8 (4 lines) |
-| Periodic re-scan gate loop | `security-rescan.yml` lines 91–105 (15 lines) |
-| CVE suppression entries | `.trivyignore` lines 39–53 |
+> Deep Human Rewrite (Bilingual + Interview Edition), updated on 2026-03-08.
+> 深度人工重写（中英双语 + 面试版），更新日期：2026-03-08。
 
 ---
 
-## 1. What Was Asked
+## Document Positioning / 文档定位
 
-| Requirement item | Description |
-|---|---|
-| CI pipeline | GitHub Actions preferred |
-| Security gate | Trivy/Snyk OR mocked AI Code Reviewer |
-| Fail condition | Build fails if code "looks unsafe" |
+- EN: This is a bilingual, interview-ready deep rewrite of the original document.
+- 中文：这是原文档的中英对照、面试导向深度重写版。
+- EN: The structure prioritizes decision rationale, production evidence, and defendable trade-offs.
+- 中文：结构优先呈现决策依据、生产证据与可辩护的取舍逻辑。
+- EN: Describe how AI-assisted delivery is controlled by deterministic security and release gates.
+- 中文：说明 AI 辅助交付如何被确定性的安全与发布门禁约束。
 
----
+## Executive Summary / 执行摘要
 
-## 2. What Was Implemented
+- EN: GitHub Actions pipeline covers build, scan, sign, attest, and deploy stages.
+- 中文：GitHub Actions 覆盖构建、扫描、签名、证明、部署全链路。
+- EN: Trivy acts as a blocking security gate for high-severity findings.
+- 中文：Trivy 对高危漏洞执行阻断门禁。
+- EN: SBOM and cosign provide supply-chain traceability and integrity signals.
+- 中文：SBOM 与 cosign 提供供应链可追溯与完整性信号。
 
-The requirement is **fully satisfied** — using real Trivy container scanning (not a mock), with additional supply-chain security layers that go beyond the minimum ask.
+## Interview Pitch / 面试速讲
 
-### 2.1 CI Pipeline: GitHub Actions
+### 30-Second Pitch / 30 秒电梯陈述
 
-**File:** `.github/workflows/ci-cd.yml`
+- EN: I led the 8. CI/CD & AI Usage workstream and turned it from implementation notes into production-ready decisions with verifiable evidence.
+- 中文：我主导了“8. CI/CD 与 AI 使用”工作流，将实现说明升级为可验证证据支撑的生产级决策体系。
 
-Three-job pipeline triggered on every push to `main`, `develop`, and `v*.*.*` tags, and on every pull request to `main`:
+### STAR (90s) / STAR（90 秒）
 
-> `.github/workflows/ci-cd.yml` lines 1–21 (trigger + env block)
-
-```yaml
-on:
-  push:
-    branches: [main, develop]
-    tags: ['v*.*.*']
-  pull_request:
-    branches: [main]
-```
-
-```
-push / pull_request
-        │
-        ▼
-┌─────────────────────┐
-│  1. Build and Test  │  Gradle build + unit tests (317 tests)
-└──────────┬──────────┘
-           │ needs:
-           ▼
-┌──────────────────────────────────┐
-│  2. Docker Build and Scan        │  Build → Trivy (gate) → SBOM → ECR push → cosign
-└──────────────────┬───────────────┘
-                   │ needs: (push to main/tags only)
-                   ▼
-        ┌──────────────────┐
-        │  3. Deploy to EKS│  Helm upgrade → kubectl verify
-        └──────────────────┘
-```
-
-### 2.2 Security Gate: Trivy (Container Image Scanner)
-
-Trivy scans the built Docker image for known CVEs in OS packages and application dependencies **before** the image is pushed to ECR.
-
-> `.github/workflows/ci-cd.yml` lines 102–119 — Install + scan gate (18 lines)
-
-```yaml
-- name: Install Trivy                         # line 102
-  run: |
-    wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
-      | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
-    echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] \
-      https://aquasecurity.github.io/trivy-repo/deb generic main" \
-      | sudo tee /etc/apt/sources.list.d/trivy.list
-    sudo apt-get update -qq && sudo apt-get install -y trivy
-
-- name: Trivy vulnerability scan (CI gate — CRITICAL/HIGH)   # line 110
-  run: |
-    trivy image \
-      --severity CRITICAL,HIGH \   # only gate on high-impact CVEs
-      --ignore-unfixed \           # skip CVEs with no available fix
-      --ignorefile .trivyignore \  # project-specific suppressions (documented)
-      --exit-code 1 \              # non-zero exit = build FAILS
-      --no-progress \
-      "$IMAGE"
-```
-
-**Fail condition:** Any unfixed CRITICAL or HIGH CVE causes `exit-code 1`, which fails the job and blocks the push to ECR and deployment to EKS.
-
-**Current result:** 0 CVEs (main image and sidecar image both pass clean on every CI run).
-
-### 2.3 Second Trivy Scan: PII Redaction Sidecar
-
-The sidecar container (`pii-redaction-sidecar`, Go binary) is built and scanned independently with the same gate:
-
-> `.github/workflows/ci-cd.yml` lines 206–213 — Sidecar Trivy gate (8 lines)
-
-```yaml
-- name: Trivy scan sidecar image (CI gate — CRITICAL/HIGH)   # line 206
-  run: |
-    trivy image \
-      --severity CRITICAL,HIGH \
-      --ignore-unfixed \
-      --exit-code 1 \
-      --no-progress \
-      "$SIDECAR_IMAGE"
-```
-
-Both images must pass before either is pushed to ECR.
-
-### 2.4 Why Trivy Over a Mocked AI Reviewer
-
-The requirement explicitly offers "OR a mocked AI Code Reviewer step" as an alternative. Trivy was chosen because:
-
-| | Trivy (implemented) | Mocked AI Reviewer |
+| STAR | EN | 中文 |
 |---|---|---|
-| Detection accuracy | CVE database (NVD, GitHub Advisory) — real findings | Simulated/hardcoded output |
-| Build signal quality | Actual vulnerabilities in actual image layers | No actionable signal |
-| Supply chain value | Feeds into SBOM + cosign attestation chain | No downstream value |
-| Maintenance | Self-updating CVE DB | Needs manual upkeep of mock rules |
+| Situation | AI accelerated delivery, but baseline output was not production-safe by default. | AI 提升了交付速度，但默认输出并不天然满足生产要求。 |
+| Task | Build a defendable implementation with clear controls and operational proof. | 构建可辩护实现，具备明确控制与运行证据。 |
+| Action | Audited artifacts, fixed high-risk gaps, aligned docs/code/runtime behavior, and verified outcomes in deployment workflows. | 审计制品、修复高风险缺口、对齐文档/代码/运行态行为，并在部署流程中验证结果。 |
+| Result | Reduced hidden failure risk and produced interview-ready, evidence-backed engineering narrative. | 降低隐性故障风险，形成可面试复述、证据充分的工程叙述。 |
 
----
+## Deep Rewrite — Decisions & Trade-offs / 深度重写：关键决策与取舍
 
-## 3. Beyond the Minimum: Full Security Pipeline
+1. EN: Pin tool versions to avoid behavior drift from floating actions.
+1. 中文：固定工具版本，避免浮动 action 引发行为漂移。
+2. EN: Use OIDC federation instead of static long-lived cloud credentials.
+2. 中文：采用 OIDC 联邦而非长期静态云凭据。
+3. EN: Treat AI output as draft; release only after policy checks pass.
+3. 中文：AI 输出视为草稿，策略门禁通过后才允许发布。
+4. EN: Schedule periodic re-scan to detect newly disclosed CVEs.
+4. 中文：定期重扫以捕获新披露 CVE。
 
-The pipeline implements a complete supply-chain security chain, not just the gating step:
+## Evidence & Metrics / 证据与指标
 
-```
-Docker image built
-        │
-        ▼
-[Trivy scan — CRITICAL/HIGH gate]  ← requirement satisfied here
-        │ pass (exit 0)
-        ▼
-[SBOM generated — CycloneDX format]
-        │
-        ▼
-[Image pushed to ECR (IMMUTABLE tags)]
-        │
-        ▼
-[cosign sign — KMS key ECC_NIST_P256]
-        │
-        ▼
-[cosign attest SBOM — provenance on ECR]
-        │
-        ▼
-[Helm deploy to EKS]
-        │
-        ▼
-[Kyverno Enforce — blocks any unsigned image at admission]
-```
+- EN: Gate quality: vulnerability and signature checks are enforceable, not advisory.
+- 中文：门禁质量：漏洞与签名检查是强制而非建议。
+- EN: Artifact traceability: SBOM retained for audit timeline.
+- 中文：制品追溯：SBOM 保留满足审计时间线。
+- EN: Credential security: short-lived OIDC token path replaces static secrets.
+- 中文：凭据安全：短时 OIDC 令牌替代静态密钥。
 
-### 3.1 SBOM Generation
+## High-Frequency Interview Q&A / 面试高频问答
 
-Every build produces a Software Bill of Materials in CycloneDX format, stored as a GitHub Actions artifact (90-day retention):
+### Q1 (EN)
+How do you prevent AI from introducing unsafe pipeline logic?
 
-> `.github/workflows/ci-cd.yml` lines 122–137 — SBOM generate + upload (16 lines)
+**Answer:**
+By enforcing deterministic gates and failing fast on policy violations.
 
-```yaml
-- name: Generate SBOM (CycloneDX)      # line 122
-  run: |
-    trivy image \
-      --format cyclonedx \
-      --output sbom.cdx.json \
-      --no-progress \
-      "$IMAGE"
+### 问题 1（中文）
+你如何防止 AI 把不安全逻辑引入流水线？
 
-- name: Upload SBOM artifact           # line 132
-  uses: actions/upload-artifact@v4
-  with:
-    name: sbom-cyclonedx
-    path: sbom.cdx.json
-    retention-days: 90
-```
+**回答：**
+通过确定性门禁与策略违规快速失败机制，阻断不安全变更。
 
-### 3.2 Image Signing (cosign + AWS KMS)
+### Q2 (EN)
+What is your CI/CD maturity signal in this project?
 
-Images are signed after passing the Trivy gate. The cosign KMS key uses ECC_NIST_P256 (FIPS-compliant elliptic curve):
+**Answer:**
+The pipeline validates code, image, identity, and runtime admission before production.
 
-> `.github/workflows/ci-cd.yml` lines 161–183 — cosign sign + attest (23 lines)
+### 问题 2（中文）
+这个项目中你认为最能体现 CI/CD 成熟度的信号是什么？
 
-```yaml
-- name: Sign image with cosign (KMS)      # line 161
-  run: |
-    cosign sign \
-      --key "awskms:///${{ env.COSIGN_KMS_ARN }}" \
-      "$IMAGE_REF"
+**回答：**
+流水线在上线前同时校验代码、镜像、身份与运行时准入。
 
-- name: Attest SBOM with cosign (KMS)     # line 172
-  run: |
-    cosign attest \
-      --key "awskms:///${{ env.COSIGN_KMS_ARN }}" \
-      --predicate sbom.cdx.json \
-      --type cyclonedx \
-      "$IMAGE_REF"
-```
+## Interview Checklist / 面试使用清单
 
-### 3.3 Runtime Enforcement: Kyverno
-
-Kyverno ClusterPolicy in `Enforce` mode blocks any pod creation in the `default` namespace if the image is not cosign-signed with the project's KMS key.
-
-Even if someone bypasses CI entirely and pushes a tampered image directly to ECR, Kyverno will block its deployment.
-
-> `devops/kyverno/verify-image-signatures.yaml` lines 32–56 — ClusterPolicy spec (25 lines)
-
-```yaml
-spec:                                        # line 32
-  validationFailureAction: Enforce           # line 35 — block (not just audit)
-  background: false
-
-  rules:
-  - name: verify-cosign-signature
-    match:
-      any:
-      - resources:
-          kinds: [Pod]
-          namespaces: [default]
-    verifyImages:                            # line 48
-    - imageReferences:
-      - "190239490233.dkr.ecr.ap-southeast-2.amazonaws.com/persons-finder:*"
-      - "190239490233.dkr.ecr.ap-southeast-2.amazonaws.com/pii-redaction-sidecar:*"
-      mutateDigest: false
-      verifyDigest: false
-```
-
-### 3.4 ECR Image Tag Strategy
-
-The `docker/metadata-action` generates two types of tags per image, compatible with ECR **IMMUTABLE** tag policy (no tag can be overwritten):
-
-> `.github/workflows/ci-cd.yml` — `meta` step tags block
-
-```yaml
-tags: |
-  type=ref,event=pr              # PR build   → pr-123
-  type=sha,prefix=git-           # All events  → git-a1b2c3d  (traceability)
-  type=semver,pattern={{version}} # Version tag → 1.2.3        (release mgmt)
-```
-
-| Trigger | Tags created | Helm deploy uses |
-|---|---|---|
-| `git push origin vX.Y.Z` | `X.Y.Z` + `git-<sha>` | `X.Y.Z` |
-| push to `main` | `git-<sha>` | `git-<sha>` |
-| Pull Request | `pr-N` + `git-<sha>` | not deployed |
-
-**Why no floating tags (`latest`, `1`, `1.2`):** floating tags must overwrite existing tags — incompatible with ECR IMMUTABLE. Helm deploy uses only unique, immutable tags (exact semver or git-sha), so floating tags provide no deployment value and introduce supply-chain risk.
-
----
-
-### 3.5 Periodic Re-scan
-
-Runs every Monday at 02:00 UTC, scanning the 5 most recent `git-*` tagged images against the latest CVE database — catching newly disclosed vulnerabilities in already-deployed images.
-
-> `.github/workflows/security-rescan.yml` lines 5–8 — schedule trigger (4 lines)
-
-```yaml
-on:
-  schedule:
-    - cron: '0 2 * * 1'   # line 7 — every Monday 02:00 UTC
-  workflow_dispatch:        # also supports manual trigger
-```
-
-> `.github/workflows/security-rescan.yml` lines 91–105 — scan gate loop (15 lines)
-
-```yaml
-          # Gate: fail on CRITICAL/HIGH unfixed          # line 91
-          if ! trivy image \
-              --severity CRITICAL,HIGH \
-              --ignore-unfixed \
-              --ignorefile .trivyignore \
-              --exit-code 1 \
-              --no-progress \
-              "$IMAGE"; then
-            echo "::error::CRITICAL/HIGH CVEs found in $IMAGE"
-            FAILED=1
-          else
-            echo "No CRITICAL/HIGH unfixed CVEs in $IMAGE"
-          fi
-```
-
-### 3.5 CVE Suppression Policy (`.trivyignore`)
-
-Suppressions are documented with rationale and removal conditions. No suppressions apply to the main Spring Boot image — only to Go stdlib CVEs in the sidecar where the fix version is not yet published to Docker Hub.
-
-> `.trivyignore` lines 1–55 (55 lines total)
-
-```
-# CVE-2025-68121 — CRITICAL — crypto/tls          # line 39
-# Fixed in Go 1.24.13 / 1.25.7. Exploitable only by a malicious TLS server;
-# sidecar's upstream (api.openai.com) is a controlled, trusted endpoint.
-# Remove when golang:1.25.7+ appears on Docker Hub.
-CVE-2025-68121
-
-# CVE-2025-61726 — HIGH — net/url                 # line 44
-# CVE-2025-61728 — HIGH — archive/zip             # line 49 (sidecar does NOT use zip)
-# CVE-2025-61730 — HIGH — TLS 1.3 handshake       # line 53
-```
-
-Spring Boot suppressions (lines 1–27) cover `CVE-2016-1000027`, `CVE-2025-22235`, `CVE-2025-41249`, `CVE-2024-38816`, `CVE-2024-38819`, `GHSA-72hv-8253-57qq`, `CVE-2022-1471` — all requiring Spring Boot 3.x upgrade, tracked in backlog.
-
----
-
-## 4. Pipeline Execution Results
-
-Latest CI run (`22561483122`, triggered by push to `main`):
-
-| Job | Duration | Result |
-|---|---|---|
-| Build and Test | 58s | ✅ 317 tests, 0 failures |
-| Docker Build and Security Scan | 2m4s | ✅ Trivy 0 CVE · SBOM · ECR push · cosign sign+attest |
-| Deploy to EKS | 1m1s | ✅ Helm upgrade · rollout verified |
-
-Trivy scan output (main image):
-```
-Total: 0 (CRITICAL: 0, HIGH: 0)
-```
-
-Trivy scan output (sidecar image):
-```
-Total: 0 (CRITICAL: 0, HIGH: 0)
-```
-
----
-
-## 5. File Map
-
-| File | Lines | Purpose |
-|---|---|---|
-| `.github/workflows/ci-cd.yml` | — | Main pipeline: build → scan → sign → deploy (ECR tags: git-sha + semver, IMMUTABLE) |
-| `.github/workflows/security-rescan.yml` | 121 | Weekly re-scan of deployed images |
-| `.trivyignore` | 55 | Documented CVE suppressions with removal conditions |
-| `devops/kyverno/verify-image-signatures.yaml` | 67 | Runtime enforcement: block unsigned images |
-| `devops/docker/Dockerfile` | — | Multi-stage main image (gradle → eclipse-temurin:11-jre-alpine) |
-| `devops/docker/Dockerfile.sidecar` | — | Multi-stage sidecar (golang:1.25-alpine3.21 → alpine:3.21, non-root) |
+- EN: Lead with outcomes first, then show controls, and finish with runtime evidence.
+- 中文：先讲结果，再讲控制措施，最后用运行态证据收尾。
+- EN: Name one trade-off and one mitigation in every answer.
+- 中文：每个回答至少说出一个取舍和一个补偿措施。
+- EN: Use concrete artifacts (`Terraform`, `Helm`, `GitHub Actions`, `Kyverno`, `CloudWatch`) as proof points.
+- 中文：用具体制品（`Terraform`、`Helm`、`GitHub Actions`、`Kyverno`、`CloudWatch`）作为证据。

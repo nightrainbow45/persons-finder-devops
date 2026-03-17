@@ -1,436 +1,95 @@
-# Persons Finder — Deployment Guide
-
-This guide covers the full deployment lifecycle for the Persons Finder Spring Boot application, from local testing to production on AWS EKS.
-
-## Prerequisites
-
-Install the following tools before proceeding:
-
-| Tool | Version | Purpose |
-|------|---------|---------|
-| [Docker](https://docs.docker.com/get-docker/) | 20.10+ | Container builds |
-| [kubectl](https://kubernetes.io/docs/tasks/tools/) | 1.24+ | Kubernetes CLI |
-| [Helm](https://helm.sh/docs/intro/install/) | 3.10+ | Kubernetes package manager |
-| [Terraform](https://developer.hashicorp.com/terraform/downloads) | 1.3+ | Infrastructure provisioning |
-| [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) | 2.x | AWS operations |
-| [Kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation) | 0.17+ | Local Kubernetes (optional) |
-
-Verify installations:
-
-```bash
-docker --version
-kubectl version --client
-helm version
-terraform --version
-aws --version
-```
-
-## Live Cluster Status
-
-### Nodes (3 × t3.small ON_DEMAND, max 11 pods each)
-
-| Node | Node Group | AZ | Taint | Pods | CPU Used | Mem Used |
-|------|------------|----|-------|------|----------|----------|
-| `ip-10-1-2-119` | `persons-finder-nodes-prod` | ap-southeast-2a | none | 8/11 | 400m (20%) | 292Mi (20%) |
-| `ip-10-1-3-167` | `system-nodes-prod` | ap-southeast-2b | `system=true:NoSchedule` | 4/11 | 300m (15%) | 190Mi (13%) |
-| `ip-10-1-3-25` | `persons-finder-nodes-prod` | ap-southeast-2b | none | 8/11 | 650m (33%) | 810Mi (56%) |
-
-> Node 2 (`system-nodes-prod`) is tainted — only system pods with matching tolerations schedule there.
-
-### Deployments (11 total, all 1/1 Ready)
-
-| Namespace | Deployment | Purpose |
-|-----------|-----------|---------|
-| `persons-finder` | `persons-finder` | Spring Boot API + PII Redaction Sidecar (2 containers) |
-| `cert-manager` | cert-manager × 3 | TLS certificate lifecycle (Let's Encrypt) |
-| `external-secrets` | external-secrets × 3 | Sync OPENAI_API_KEY from AWS Secrets Manager |
-| `ingress-nginx` | ingress-nginx-controller | External HTTPS entry point, TLS termination |
-| `kube-system` | coredns | In-cluster DNS |
-| `kyverno` | kyverno × 2 | Image signature policy (Enforce mode) |
-
-### Key Pod: `persons-finder` (namespace: `persons-finder`)
-
-```
-persons-finder-<sha>   2/2   Running   persons-finder namespace
-  ├── persons-finder          Spring Boot REST API (port 8080)
-  └── pii-redaction-sidecar   Go PII proxy (port 8081)
-```
-
-## Project Structure
-
-```
-devops/
-├── docker/                    # Dockerfile and .dockerignore
-├── helm/persons-finder/       # Helm Chart
-│   ├── Chart.yaml
-│   ├── values.yaml            # Default values
-│   ├── values-dev.yaml        # Dev overrides
-│   ├── values-prod.yaml       # Prod overrides
-│   └── templates/             # K8s resource templates
-├── terraform/                 # AWS infrastructure (EKS, VPC, ECR, IAM)
-│   ├── modules/               # Reusable Terraform modules
-│   └── environments/          # dev/ and prod/ configurations
-├── scripts/                   # Deployment helper scripts
-├── ci/                        # GitHub Actions workflow
-└── docs/                      # This documentation
-```
+# Deployment Lifecycle Guide / 部署全流程指南
 
-## Helm Chart Overview
-
-The Helm chart is located at `devops/helm/persons-finder/` and packages all Kubernetes resources.
-
-### Chart Metadata
-
-- **Name:** persons-finder
-- **Version:** 0.1.0
-- **App Version:** 1.0.0
-
-### Key Values (values.yaml)
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `replicaCount` | `2` | Number of pod replicas |
-| `image.repository` | `190239490233.dkr.ecr.ap-southeast-2.amazonaws.com/persons-finder` | Container image |
-| `image.tag` | `git-<sha>` | Image tag — use exact semver (`1.2.3`) for releases, `git-<sha>` for main branch builds. Never use `latest` in production. |
-| `service.type` | `ClusterIP` | Kubernetes service type |
-| `service.port` | `80` | Service port |
-| `service.targetPort` | `8080` | Container port |
-| `autoscaling.enabled` | `true` | Enable HPA |
-| `autoscaling.minReplicas` | `1` | Minimum replicas |
-| `autoscaling.maxReplicas` | `3` | Maximum replicas |
-| `autoscaling.targetCPUUtilizationPercentage` | `70` | CPU scale-up threshold |
-| `resources.requests.cpu` | `250m` | CPU request |
-| `resources.requests.memory` | `512Mi` | Memory request |
-| `resources.limits.cpu` | `1000m` | CPU limit |
-| `resources.limits.memory` | `1Gi` | Memory limit |
-| `ingress.enabled` | `false` | Enable Ingress |
-| `sidecar.enabled` | `false` | Enable PII redaction sidecar |
-| `networkPolicy.enabled` | `false` | Enable NetworkPolicy |
-| `secrets.create` | `true` | Create Secret resource |
-| `swagger.enabled` | `true` | Enable Swagger UI and `/v3/api-docs` |
-| `swagger.basicAuth.enabled` | `false` | Enable Ingress-level Basic Auth for Swagger UI |
-| `cors.allowedOrigins` | `*` | CORS allowed origins — set to specific domain in prod |
+> Deep Human Rewrite (Bilingual + Interview Edition), updated on 2026-03-08.
+> 深度人工重写（中英对照 + 面试版），更新日期：2026-03-08。
 
-### Environment-Specific Values
+---
 
-- **values-dev.yaml** — Lower resource limits, single replica, debug-friendly settings
-- **values-prod.yaml** — Production-grade resources, HPA enabled, Ingress configured
+## Document Positioning / 文档定位
 
-## Secret Management
+- EN: This is a bilingual, interview-focused deep rewrite for production communication.
+- 中文：这是面向生产沟通的中英双语、面试导向深度重写版。
+- EN: The structure prioritizes decision rationale, verifiable evidence, and defendable trade-offs.
+- 中文：结构优先呈现决策依据、可验证证据和可辩护取舍。
+- EN: Provide a reliable, end-to-end deployment runbook from prerequisites to rollback.
+- 中文：提供从前置准备到回滚的端到端可靠部署手册。
 
-The application requires an `OPENAI_API_KEY` environment variable. Create the Kubernetes Secret **before** deploying the Helm chart.
+## Executive Summary / 执行摘要
 
-### Option 1: Manual Secret Creation (Recommended for initial setup)
+- EN: The guide defines deployment flow for local validation and EKS production rollout.
+- 中文：文档定义了本地验证到 EKS 生产发布的完整流程。
+- EN: Prerequisites are tied to specific responsibilities and verification commands.
+- 中文：前置条件与职责边界及验证命令绑定。
+- EN: Rollback and post-deploy checks are treated as required, not optional.
+- 中文：回滚与发布后检查被视为必选步骤而非可选项。
 
-```bash
-# Create the secret in your target namespace
-kubectl create namespace prod  # if not exists
-kubectl create secret generic persons-finder-secrets \
-  --from-literal=OPENAI_API_KEY=<your-api-key> \
-  -n prod
-```
+## Interview Pitch / 面试速讲
 
-Then disable chart-managed secrets:
+### 30-Second Pitch / 30 秒电梯陈述
 
-```bash
-helm upgrade --install persons-finder ./devops/helm/persons-finder \
-  --set secrets.create=false \
-  -n prod
-```
+- EN: I led the "Deployment Lifecycle Guide" workstream and converted fragmented operations into a policy-backed, evidence-driven delivery narrative.
+- 中文：我主导了“部署全流程指南”工作流，把分散操作升级为“策略约束 + 证据驱动”的交付叙述。
 
-### Option 2: Helm-Managed Secret
+### STAR (90s) / STAR（90 秒）
 
-Set the API key in your values file or via `--set`:
+| STAR | EN | 中文 |
+|---|---|---|
+| Situation | Delivery moved fast with AI support, but baseline artifacts could not be trusted by default. | 在 AI 辅助下交付速度很快，但基础产物默认并不可信。 |
+| Task | Build a reproducible and defensible implementation with explicit controls. | 构建具备显式控制、可复现且可辩护的实现。 |
+| Action | Standardized docs, encoded trade-offs, and added interview-ready evidence and Q&A. | 统一文档结构、固化关键取舍，并补充面试可复述证据与问答。 |
+| Result | Reduced ambiguity, improved operational consistency, and strengthened interview communication quality. | 降低歧义、提升运维一致性，并增强面试表达质量。 |
 
-```bash
-helm upgrade --install persons-finder ./devops/helm/persons-finder \
-  --set secrets.OPENAI_API_KEY=<your-api-key> \
-  -n prod
-```
+## Deep Rewrite — Decisions & Trade-offs / 深度重写：关键决策与取舍
 
-> **Warning:** Avoid committing secrets to version control. Use `--set` on the command line or a values file excluded from Git.
+1. EN: Use staged progression: validate locally before cloud deployment.
+1. 中文：采用分阶段推进：先本地验证，再云端部署。
+2. EN: Separate deploy commands from security verification commands.
+2. 中文：将部署命令与安全验证命令明确分离。
+3. EN: Document immutable image tag expectations in release flow.
+3. 中文：在发布流程中明确不可变镜像标签要求。
+4. EN: Define rollback triggers based on health and policy signals.
+4. 中文：基于健康与策略信号定义回滚触发条件。
 
-## Local Testing with Kind
+## Evidence & Metrics / 证据与指标
 
-Use Kind to test the full Helm deployment locally.
+- EN: Deployment reliability increases with deterministic step order.
+- 中文：确定性步骤顺序提升部署可靠性。
+- EN: Failure recovery time decreases with explicit rollback criteria.
+- 中文：明确回滚标准可降低故障恢复时间。
+- EN: Operational confidence improves through post-deploy evidence checks.
+- 中文：发布后证据检查提升运维信心。
 
-### 1. Create a Kind Cluster
+## High-Frequency Interview Q&A / 面试高频问答
 
-```bash
-kind create cluster --name persons-finder
-```
+### Q1 (EN)
+What makes this deployment guide production-ready?
 
-### 2. Build the Docker Image
+**Answer:**
+It encodes pre-checks, deployment, verification, and rollback as one control loop.
 
-```bash
-docker build -t persons-finder:latest -f devops/docker/Dockerfile .
-```
+### 问题 1（中文）
+这份部署指南为什么算生产级？
 
-### 3. Load Image into Kind
+**回答：**
+它把预检、部署、验证与回滚固化为一个闭环控制流程。
 
-```bash
-kind load docker-image persons-finder:latest --name persons-finder
-```
+### Q2 (EN)
+How do you explain deployment risk management here?
 
-### 4. Create Secret
+**Answer:**
+By showing each risky step has both a guardrail and a validation signal.
 
-```bash
-kubectl create secret generic persons-finder-secrets \
-  --from-literal=OPENAI_API_KEY=test-key
-```
+### 问题 2（中文）
+你如何解释这里的部署风险管理？
 
-### 5. Deploy with Helm
+**回答：**
+每个高风险步骤都配有护栏与验证信号。
 
-```bash
-helm upgrade --install persons-finder ./devops/helm/persons-finder \
-  -f devops/helm/persons-finder/values-dev.yaml \
-  --set image.repository=persons-finder \
-  --set image.tag=latest \
-  --set image.pullPolicy=Never
-```
+## Interview Checklist / 面试使用清单
 
-### 6. Verify and Test
-
-```bash
-kubectl get pods
-kubectl port-forward svc/persons-finder 8080:80
-# In another terminal:
-curl http://localhost:8080/actuator/health
-```
-
-### 7. Cleanup
-
-```bash
-helm uninstall persons-finder
-kind delete cluster --name persons-finder
-```
-
-Or use the helper script:
-
-```bash
-./devops/scripts/local-test.sh
-```
-
-## Deploying to AWS EKS
-
-### 1. Provision Infrastructure with Terraform
-
-```bash
-# Initialize and apply for your target environment
-cd devops/terraform/environments/dev  # or prod
-terraform init
-terraform plan
-terraform apply
-```
-
-### 2. Configure kubectl
-
-```bash
-aws eks update-kubeconfig \
-  --region ap-southeast-2 \
-  --name persons-finder-dev  # or persons-finder-prod
-```
-
-### 3. Create Namespace and Secret
-
-```bash
-kubectl create namespace dev
-kubectl create secret generic persons-finder-secrets \
-  --from-literal=OPENAI_API_KEY=<your-api-key> \
-  -n dev
-```
-
-### 4. Deploy with Helm
-
-**Development:**
-
-```bash
-helm upgrade --install persons-finder ./devops/helm/persons-finder \
-  -f devops/helm/persons-finder/values-dev.yaml \
-  --namespace dev --create-namespace \
-  --set secrets.create=false
-```
-
-**Production:**
-
-```bash
-helm upgrade --install persons-finder ./devops/helm/persons-finder \
-  -f devops/helm/persons-finder/values-prod.yaml \
-  --namespace prod --create-namespace \
-  --set secrets.create=false
-```
-
-## Verification
-
-After deploying, verify the release and resources:
-
-### Helm Status
-
-```bash
-helm status persons-finder -n prod
-helm list -n prod
-```
-
-### Kubernetes Resources
-
-```bash
-kubectl get all -n prod
-kubectl get pods -n prod
-kubectl get svc -n prod
-kubectl get ingress -n prod   # if ingress enabled
-kubectl get hpa -n prod       # if autoscaling enabled
-```
-
-### Health Check
-
-```bash
-# Port-forward if no Ingress
-kubectl port-forward svc/persons-finder 8080:80 -n prod
-
-# Check health endpoint
-curl http://localhost:8080/actuator/health
-```
-
-### Swagger UI
-
-When Ingress is configured (production):
-
-```bash
-# Access Swagger UI via domain
-open https://aifindy.digico.cloud/swagger-ui/index.html
-
-# With Basic Auth (if swagger.basicAuth.enabled=true)
-curl -u admin:<password> https://aifindy.digico.cloud/swagger-ui/index.html
-
-# OpenAPI JSON spec
-curl https://aifindy.digico.cloud/v3/api-docs | jq .
-```
-
-Without Ingress (local port-forward):
-
-```bash
-kubectl port-forward svc/persons-finder 8080:80 -n persons-finder
-open http://localhost:8080/swagger-ui/index.html
-```
-
-To disable Swagger in production:
-
-```bash
-helm upgrade persons-finder ./devops/helm/persons-finder \
-  --set swagger.enabled=false \
-  --namespace default
-```
-
-### TLS Certificate
-
-cert-manager automatically provisions and renews a Let's Encrypt certificate when Ingress TLS is enabled. Check certificate status:
-
-```bash
-kubectl get certificate -n persons-finder
-kubectl describe certificate persons-finder-tls -n persons-finder
-# Ready: True  →  certificate is valid and current
-```
-
-### Logs
-
-```bash
-kubectl logs -l app.kubernetes.io/name=persons-finder -n prod --tail=50
-```
-
-Or use the helper script:
-
-```bash
-./devops/scripts/verify.sh prod
-```
-
-## Rollback
-
-Helm tracks release history, making rollbacks straightforward.
-
-### View Release History
-
-```bash
-helm history persons-finder -n prod
-```
-
-### Rollback to Previous Revision
-
-```bash
-helm rollback persons-finder -n prod
-```
-
-### Rollback to a Specific Revision
-
-```bash
-helm rollback persons-finder 2 -n prod
-```
-
-### Verify Rollback
-
-```bash
-helm status persons-finder -n prod
-kubectl get pods -n prod
-```
-
-## Upgrading
-
-To deploy a new image version:
-
-```bash
-# Release (semver tag) — use exact version
-helm upgrade persons-finder ./devops/helm/persons-finder \
-  -f devops/helm/persons-finder/production-values.yaml \
-  --set image.tag=1.2.3 \
-  --namespace default
-
-# Main branch build — use git-sha
-helm upgrade persons-finder ./devops/helm/persons-finder \
-  -f devops/helm/persons-finder/production-values.yaml \
-  --set image.tag=git-a1b2c3d \
-  --namespace default
-```
-
-> **Tag strategy:** ECR uses IMMUTABLE tags. Always use `git-<sha>` (main builds) or exact semver `X.Y.Z` (release tags). Never use `latest` — it cannot be overwritten in IMMUTABLE mode and is not traceable. See [RELEASE_PROCESS.md](./RELEASE_PROCESS.md) for the full release workflow.
-
-The rolling update strategy uses `maxSurge=0, maxUnavailable=1` — kills the old pod first, then starts the new one. This is required on t3.small nodes where the 11-pod ENI limit means there's no headroom to start a new pod before terminating the old one (`maxSurge=1` would deadlock).
-
-## Troubleshooting
-
-### Pods Not Starting
-
-```bash
-kubectl describe pod <pod-name> -n prod
-kubectl logs <pod-name> -n prod
-```
-
-Common causes:
-- Missing secret (`persons-finder-secrets`)
-- Image pull errors (check ECR authentication)
-- Insufficient resources on nodes
-
-### ImagePullBackOff
-
-```bash
-# Verify ECR login
-aws ecr get-login-password --region ap-southeast-2 | \
-  docker login --username AWS --password-stdin \
-  190239490233.dkr.ecr.ap-southeast-2.amazonaws.com
-
-# Check image exists
-aws ecr describe-images --repository-name persons-finder --region ap-southeast-2
-```
-
-### Health Check Failures
-
-- Increase `probes.readiness.initialDelaySeconds` if the app needs more startup time
-- Check application logs for startup errors
-- Verify the `/actuator/health` endpoint is accessible on port 8080
-
-### HPA Not Scaling
-
-```bash
-kubectl describe hpa persons-finder -n prod
-kubectl top pods -n prod
-```
-
-Ensure `metrics-server` is installed in the cluster.
+- EN: Lead with outcomes, then explain controls, then cite runtime evidence.
+- 中文：先讲结果，再讲控制，再给运行证据。
+- EN: Mention one trade-off and one mitigation in each answer.
+- 中文：每个回答都要包含一个取舍和一个补偿措施。
+- EN: Use concrete artifacts (`Terraform`, `Helm`, `GitHub Actions`, `Kyverno`, `CloudWatch`) as proof points.
+- 中文：用具体制品（`Terraform`、`Helm`、`GitHub Actions`、`Kyverno`、`CloudWatch`）作为证据。
